@@ -21,13 +21,13 @@ jobs:
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]"
+        run: uv sync --python 3.11 --all-extras
 
       - name: Lint
-        run: ruff check src tests scripts
+        run: uv run ruff check src tests scripts
 
       - name: Format check
-        run: ruff format --check src tests scripts
+        run: uv run ruff format --check src tests scripts
 
       - name: Unit tests
-        run: pytest tests/unit
+        run: uv run pytest tests/unit
