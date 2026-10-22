@@ -1,8 +1,7 @@
 # Referencia de la API
 
 Documento de referencia de todos los endpoints expuestos por `spaceapps-2026-core`.
-Generado a partir del código en `src/spaceapps_core/`. Si un campo no aparece aquí,
-no se devuelve.
+Generado a partir del código en `src/spaceapps_core/`.
 
 - Prefijo base: `/api/v1` (los endpoints de salud viven en la raíz).
 - Todos los endpoints de datos aceptan `format=json|csv|parquet` cuando devuelven
