@@ -1,0 +1,31 @@
+* text=auto eol=lf
+
+*.py       text eol=lf
+*.md       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.toml     text eol=lf
+*.cfg      text eol=lf
+*.ini      text eol=lf
+*.json     text eol=lf
+*.txt      text eol=lf
+*.sh       text eol=lf
+*.env      text eol=lf
+Dockerfile text eol=lf
+Makefile   text eol=lf
+
+*.ipynb    text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.parquet binary
+*.nc   binary
+*.nc4  binary
+*.h5   binary
+*.hdf5 binary
