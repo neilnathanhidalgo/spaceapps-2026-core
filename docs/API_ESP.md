@@ -40,6 +40,8 @@ Generado a partir del código en `src/spaceapps_core/`.
   - `GET /api/v1/features`
 - [App móvil](#app-móvil)
   - `GET /api/v1/app/climate-overview`
+  - `GET /api/v1/app/catalog`
+  - `POST /api/v1/app/recommendation`
 
 ---
 
@@ -580,3 +582,257 @@ No requiere credenciales.
 | `comparison.type` | `times_normal` (`factor` > 0, acotado a 0.1–10), `degrees_from_normal` (`delta` en °C), `moisture_category` (`level`: `dry`, `normal`, `wet`, `very_wet`; umbrales de ±0.1 y +0.2 sobre `GWETTOP`) |
 | `observed_level`, `normal_level` | Posición en la barra (0..1) |
 | `advice` | Texto en español que empieza en minúscula; la app le antepone "Qué hacer:" |
+
+---
+
+### `GET /api/v1/app/catalog`
+Cultivos, prioridades y restricciones entre las que elige el agricultor.
+Sale del archivo de parámetros agronómicos
+(`src/spaceapps_core/data/agro_config.json`, configurable con
+`AGRO_CONFIG_PATH`). No requiere credenciales.
+
+**Sin parámetros.**
+
+**Respuesta `200` — `AppCatalog`**
+```json
+{
+  "crops": [
+    { "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades" },
+    { "id": "maize", "name": "Maíz", "cycle_months": 4, "soil_impact": "neutral" }
+  ],
+  "priorities": [
+    { "id": "lower-climate-risk", "name": "Menos riesgo de clima", "phrase": "tener menos riesgo de clima" },
+    { "id": "save-water", "name": "Cuidar mi agua", "phrase": "cuidar tu agua" },
+    { "id": "restore-soil", "name": "Recuperar mi tierra", "phrase": "recuperar tu tierra" }
+  ],
+  "restrictions": [
+    { "id": "no-cotton-buyer", "name": "No tengo comprador para algodón" },
+    { "id": "low-water", "name": "Tendré poca agua" }
+  ],
+  "example_parameters": true
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `priorities` | En orden de presentación; **la primera es la sugerida** cuando el agricultor no elige |
+| `cycle_months` | Duración del ciclo del cultivo, en meses (= largo de `kc_by_month`) |
+| `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
+| `example_parameters` | `true` mientras algún bloque del JSON siga marcado con `"_example": true` |
+
+---
+
+### `POST /api/v1/app/recommendation`
+Recomendación de rotación para la pantalla **Qué sembrar** (y "¿Cuándo
+siembro?" y "Rotación"). Calcula **los tres escenarios de una sola vez**, para
+que la app pueda cambiar de escenario sin volver a pedir datos. Solo usa
+**NASA POWER** (sin credenciales) y el archivo de parámetros agronómicos.
+
+**Cómo se calcula**
+
+1. **Clima del escenario:** para cada escenario (`heavy_rains`, `normal`,
+   `dry`) se bajan los años de referencia de `scenarios` (POWER diario:
+   `PRECTOTCORR`, `T2M_MAX`, `T2M_MIN`) y se promedian por mes del año: la
+   lluvia como media de los acumulados mensuales, las temperaturas como media
+   de los valores diarios.
+2. **ET0 mensual:** Hargreaves-Samani (`services/et0.py: reference_et0`) con
+   `T2M_MAX`, `T2M_MIN` y la radiación extraterrestre de la latitud a mitad de
+   mes. Está aislada para poder reemplazarla por Penman-Monteith.
+3. **Calendario:** el primer cultivo arranca en el **mes** de `planting_date` y
+   cada cultivo siguiente empieza cuando termina el anterior; la duración de
+   cada uno es el largo de su `kc_by_month`.
+4. **Agua de riego:** por mes calendario,
+   `max(0, ET0 × Kc × días_del_mes − lluvia_efectiva)` en mm
+   (`lluvia_efectiva = lluvia_mensual × effective_rain_fraction`),
+   × `area_ha` × 10 para pasar a m³. Se suma por cultivo y por rotación.
+5. **Meses de riesgo:** meses del año cuya lluvia del escenario supera
+   `risk_month_rain_mm`. El riesgo de una opción es cuántos meses de **su**
+   calendario caen en esos meses, con nivel `low` / `medium` / `high` según
+   `climate_risk_medium_months` y `climate_risk_high_months`.
+6. **Tierra:** el estado actual sale del último cultivo y de cuántas campañas
+   seguidas lleva con él
+   (`soil_baseline_score + impacto_del_cultivo × (campañas − soil_campaigns_before_penalty)`,
+   acotado a la escala `very_tired` → `good`). El estado "en dos años" aplica el
+   `soil_impact` de cada cultivo de la rotación, repitiéndola hasta cubrir
+   `soil_horizon_months`.
+7. **Restricciones:** cada opción trae `excluded_by` con las restricciones que
+   la descartan; **ninguna opción se elimina de la respuesta** (la app ya sabe
+   ocultarlas). Una restricción descarta por cultivo (`excludes_crop_ids`) o por
+   consumo de agua (`excludes_high_water_use`, cuando el agua por hectárea
+   supera `low_water_m3_per_ha` **en algún escenario**).
+8. **Ranking por prioridad y escenario** (se calcula para **todas** las
+   prioridades del catálogo, no solo la elegida):
+   - `save-water` (`least_water`): menos agua de riego;
+   - `restore-soil` (`most_soil_improvement`): mayor mejora de la tierra; en
+     empate, menos meses de riesgo;
+   - `lower-climate-risk` (`least_climate_risk`): menos meses de riesgo; en
+     empate, menos agua.
+
+   Los empates conservan el orden del catálogo.
+
+**Cuerpo — `RecommendationRequest`** (`extra="forbid"`: un campo desconocido
+responde `422`)
+
+| Campo | Tipo | Obligatorio | Notas |
+|---|---|---|---|
+| `lat` | `float` | Sí | `-90..90` |
+| `lon` | `float` | Sí | `-180..180` |
+| `planting_date` | `date` | Sí | Fecha que ingresa el agricultor |
+| `area_ha` | `float` | No (`1.0`) | `> 0`, hectáreas de la parcela |
+| `last_crop_id` | `string \| null` | No (`null`) | `null` usa `defaults.last_crop_id` |
+| `consecutive_campaigns` | `int` | No (`1`) | `>= 0`, campañas seguidas con ese cultivo |
+| `priority_id` | `string \| null` | No (`null`) | `null` usa la primera prioridad del catálogo |
+| `restriction_ids` | `string[]` | No (`[]`) | Ids del catálogo |
+
+```json
+{
+  "lat": -5.19, "lon": -80.63,
+  "area_ha": 2.0,
+  "planting_date": "2026-12-15",
+  "last_crop_id": "rice",
+  "consecutive_campaigns": 3,
+  "priority_id": "save-water",
+  "restriction_ids": ["low-water"]
+}
+```
+
+Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
+`400 invalid_request` **sin** llamar a NASA POWER.
+
+**Respuesta `200` — `RecommendationResponse`** (recortada: `monthly`,
+`long_term_plan` y `monthly_climate` van completos)
+```json
+{
+  "location": { "lat": -5.19, "lon": -80.63, "geometry": null },
+  "area_ha": 2.0,
+  "planting_date": "2026-12-15",
+  "priority_id": "save-water",
+  "restriction_ids": ["low-water"],
+  "options": [
+    {
+      "id": "r1",
+      "crop_ids": ["maize", "bean"],
+      "cycle_months": 7,
+      "soil_impact": "improves_a_lot",
+      "soil_impact_score": 2,
+      "soil_in_two_years": "good",
+      "factsheet": {
+        "rationale": "El maíz aguanta mejor el clima que el arroz. El frejol le devuelve fuerza a tu tierra.",
+        "evidence": "…", "benefits": "…", "unknowns": "…", "risks": "…"
+      },
+      "excluded_by": [],
+      "calendar": {
+        "planting_date": "2026-12-15",
+        "decision_deadline": "2026-12-15",
+        "timeline_start": "2026-12-01",
+        "timeline_months": 7,
+        "periods": [
+          { "crop_id": "maize", "start": "2026-12-01", "month_count": 4 },
+          { "crop_id": "bean", "start": "2027-04-01", "month_count": 3 }
+        ],
+        "instructions": "Siembra el maíz en la primera quincena del mes."
+      },
+      "long_term_plan": [
+        { "crop_id": "maize", "start": "2026-12-01", "end": "2027-03-01", "soil_after": "tired" },
+        { "crop_id": "bean", "start": "2027-04-01", "end": "2027-06-01", "soil_after": "good" }
+      ],
+      "scenarios": {
+        "normal": {
+          "irrigation_m3": 12786.0,
+          "irrigation_m3_per_ha": 6393.0,
+          "risk_months": [],
+          "risk_month_count": 0,
+          "climate_risk": "low",
+          "monthly": [
+            {
+              "month": "2026-12-01", "crop_id": "maize", "kc": 0.4,
+              "et0_mm_day": 5.36, "rain_mm": 15.0, "effective_rain_mm": 12.0,
+              "irrigation_mm": 54.5, "irrigation_m3": 1090.2
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "ranking": {
+    "save-water": {
+      "heavy_rains": ["r3", "r1", "r2"],
+      "normal": ["r1", "r3", "r2"],
+      "dry": ["r1", "r3", "r2"]
+    },
+    "restore-soil": { "heavy_rains": ["r2", "r1", "r3"], "normal": ["r2", "r1", "r3"], "dry": ["r2", "r1", "r3"] },
+    "lower-climate-risk": { "heavy_rains": ["r3", "r1", "r2"], "normal": ["r1", "r3", "r2"], "dry": ["r1", "r3", "r2"] }
+  },
+  "current_practice": {
+    "crop_ids": ["rice", "rice"],
+    "consecutive_campaigns": 3,
+    "cycle_months": 10,
+    "soil_in_two_years": "very_tired",
+    "factsheet": { "rationale": "…", "evidence": "…", "benefits": "…", "unknowns": "…", "risks": "…" },
+    "repeat_warnings": {
+      "heavy_rains": "…",
+      "normal": "Si repites el mismo cultivo, gastas mucha más agua y cansas tu tierra.",
+      "dry": "…"
+    },
+    "scenarios": { "normal": { "irrigation_m3": 28684.0, "irrigation_m3_per_ha": 14342.0, "risk_months": [], "risk_month_count": 0, "climate_risk": "low", "monthly": [] } }
+  },
+  "soil_health": {
+    "condition": "tired",
+    "findings": ["Lleva 3 campañas seguidas de arroz.", "Tiene poca materia orgánica."]
+  },
+  "risk_months": {
+    "heavy_rains": ["2027-02-01", "2027-03-01"],
+    "normal": [],
+    "dry": []
+  },
+  "scenario_notes": {
+    "heavy_rains": "Con lluvias fuertes, ",
+    "normal": "En un año normal, ",
+    "dry": "En un año seco, "
+  },
+  "irrigation_source": "Poechos",
+  "climate_basis": {
+    "source": "nasa_power",
+    "variables": ["PRECTOTCORR", "T2M_MAX", "T2M_MIN"],
+    "reference_years": {
+      "heavy_rains": [1998, 2017, 2023],
+      "normal": [2013, 2014, 2019],
+      "dry": [2004, 2010, 2022]
+    },
+    "et0_method": "hargreaves",
+    "effective_rain_fraction": 0.8,
+    "risk_month_rain_mm": 150.0,
+    "monthly_climate": {
+      "normal": [
+        { "month": 1, "rain_mm": 30.0, "t2m_max": 32.0, "t2m_min": 20.0, "et0_mm_day": 5.41, "is_risk_month": false }
+      ]
+    }
+  },
+  "example_parameters": true,
+  "generated_at": "2026-11-14T15:23:42"
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `options[].scenarios` | Siempre las tres claves `heavy_rains`, `normal`, `dry` |
+| `options[].excluded_by` | Ids de restricción que descartan la opción (independiente de las que envió el agricultor) |
+| `options[].soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot`, derivado de `soil_impact_score` (suma de los impactos de sus cultivos) |
+| `soil_in_two_years`, `soil_health.condition`, `soil_after` | `very_tired`, `tired`, `regular`, `good` |
+| `climate_risk` | `low`, `medium`, `high` |
+| `ranking` | `prioridad → escenario → ids` de **todas** las opciones, de mejor a peor. Vienen **todas** las prioridades del catálogo, para que cambiar de prioridad o de escenario en la app no obligue a repetir la petición |
+| `irrigation_m3` | Agua de riego de **todo el ciclo** de la rotación (ojo: `cycle_months` cambia entre opciones) |
+| `risk_months` (raíz) | Meses de riesgo del horizonte de planificación, por escenario |
+| `current_practice` | El último cultivo repetido `defaults.current_practice_campaigns` veces |
+| `scenario_notes`, `repeat_warnings`, `irrigation_source`, `factsheet` | Textos del archivo de parámetros (decisión B11) |
+| `example_parameters` | `true` mientras el JSON tenga valores de ejemplo |
+
+**Errores**
+
+| Código | Cuándo |
+|---|---|
+| `400 invalid_request` | `priority_id`, `restriction_ids` o `last_crop_id` desconocidos |
+| `422 validation_error` | Campo faltante, fuera de rango o no declarado en el cuerpo |
+| `502 upstream_error` | NASA POWER no devolvió datos completos para los años de referencia |
+| `503 not_configured` | `agro_config.json` no se puede leer o no es coherente |
+

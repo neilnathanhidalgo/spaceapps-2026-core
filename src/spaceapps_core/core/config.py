@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     default_lat: float = -5.19
     default_lon: float = -80.63
 
+    agro_config_path: str = Field(
+        default="",
+        description="Agronomic parameters JSON. Empty uses the one packaged with the library.",
+    )
+
     cache_dir: str = ".cache"
     cache_ttl_forecast: int = 1800
     cache_ttl_history: int = 86400

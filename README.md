@@ -11,10 +11,10 @@ need the service running to work with the data.
 
 ## Status
 
-This repository is intentionally scoped as **infrastructure, not business
-logic**: data clients, API shape, caching and connectivity tests are in place,
-but the recommendation engine itself (how to translate the data into advice for
-farmers) is left for the hackathon weekend.
+Data clients, API shape, caching and connectivity tests are in place, plus a
+first **recommendation engine** for the mobile app (`/api/v1/app/*`). The
+engine's structure, loading and validation are done; the agronomic values it
+reads are still examples (see below).
 
 ## Architecture
 
@@ -132,6 +132,8 @@ is stubbed with `respx`).
 | GET | `/api/v1/crop-suitability` | FAO GAEZ rainfed suitability per crop, most suitable first |
 | GET | `/api/v1/features` | Daily multi-source table ready for ML; one column per variable |
 | GET | `/api/v1/app/climate-overview` | Ready-to-render summary for the mobile app's Clima screen (Open-Meteo forecast + NASA POWER anomalies) |
+| GET | `/api/v1/app/catalog` | Crops, priorities and restrictions the app offers, from `agro_config.json` |
+| POST | `/api/v1/app/recommendation` | Rotation recommendation for the three climate scenarios at once (NASA POWER + `agro_config.json`) |
 
 All data endpoints accept `lat`, `lon`, `start`, `end`, and `format=json|csv|parquet`.
 
@@ -183,6 +185,72 @@ make check-connections
 
 Prints a table with `ok` / `error` / `not_configured` per source and latency.
 Also usable in CI gates to notice when an upstream is down.
+
+## Recommendation engine (mobile app)
+
+`POST /api/v1/app/recommendation` answers "what should I plant?" with the
+farmer's own inputs (location, hectares, planting date, last crop, campaigns in
+a row, priority, restrictions) and **NASA POWER only** — no credentials. It
+returns the three climate scenarios at once (`heavy_rains`, `normal`, `dry`) so
+the app can switch between them offline, each with irrigation water (m³),
+climate-risk months, the planting calendar and the soil outlook. The ranking
+comes for every priority of the catalog as well, so changing priority in the app
+needs no new request. `GET /api/v1/app/catalog` serves the crops, priorities and
+restrictions. Both are documented in [docs/API.md](docs/API.md).
+
+Every agronomic value lives in one editable file,
+`src/spaceapps_core/data/agro_config.json` (override the path with
+`AGRO_CONFIG_PATH`):
+
+| Block | What it holds |
+|---|---|
+| `crops` | Id, display name, `kc_by_month` (one crop coefficient per month of the cycle; its length is the cycle duration), `soil_impact` and the factsheet texts |
+| `rotations` | Id and the ordered list of crop ids |
+| `scenarios` | Reference years whose observed POWER climate stands for each scenario |
+| `thresholds` | Risk-month rainfall, effective-rain fraction, the water-per-hectare limit of "Tendré poca agua", risk levels and the soil rule |
+| `priorities` | Id, display name, short phrase and the ranking `criterion` |
+| `restrictions` | Id, display name and what they rule out (`excludes_crop_ids`, `excludes_high_water_use`) |
+| `defaults`, `content` | Fallback last crop and the Spanish texts shown by the app |
+
+> **The values shipped are examples.** Every block is flagged
+> `"_example": true` and the API answers `"example_parameters": true` while any
+> of them still is. The data team replaces the numbers in that file; no code
+> changes are needed.
+
+All the maths is pure, importable functions — no FastAPI involved — so it can be
+driven from a notebook:
+
+```python
+from datetime import date
+from spaceapps_core.schemas.recommendation import RecommendationRequest
+from spaceapps_core.services.agro_config import load_agro_config
+from spaceapps_core.services.recommendation import (
+    build_recommendation,
+    fetch_scenario_climates,
+)
+from spaceapps_core.schemas.common import Location
+
+config = load_agro_config()          # or load_agro_config("my_params.json")
+location = Location(lat=-5.19, lon=-80.63)
+climates = await fetch_scenario_climates(location, config.scenarios)
+response = build_recommendation(
+    RecommendationRequest(
+        lat=location.lat,
+        lon=location.lon,
+        area_ha=2.0,
+        planting_date=date(2026, 12, 15),
+        last_crop_id="rice",
+        consecutive_campaigns=3,
+        priority_id="save-water",
+    ),
+    config,
+    climates,
+)
+print(response.ranking["save-water"]["normal"])
+```
+
+`reference_et0` (Hargreaves-Samani, `services/et0.py`) is isolated so a better
+method can replace it without touching the engine.
 
 ## Caching
 

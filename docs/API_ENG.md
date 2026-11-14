@@ -40,6 +40,8 @@ Generated from the code in `src/spaceapps_core/`.
   - `GET /api/v1/features`
 - [Mobile app](#mobile-app)
   - `GET /api/v1/app/climate-overview`
+  - `GET /api/v1/app/catalog`
+  - `POST /api/v1/app/recommendation`
 
 ---
 
@@ -560,3 +562,130 @@ No credentials needed.
 | `comparison.type` | `times_normal` (`factor` > 0, clamped to 0.1–10), `degrees_from_normal` (`delta` in °C), `moisture_category` (`level`: `dry`, `normal`, `wet`, `very_wet`; ±0.1 and +0.2 thresholds on `GWETTOP`) |
 | `observed_level`, `normal_level` | Bar position (0..1) |
 | `advice` | Spanish text starting in lowercase; the app prefixes it with "Qué hacer:" |
+
+---
+
+### `GET /api/v1/app/catalog`
+Crops, priorities and restrictions the farmer chooses from. Served straight
+from the agronomic parameter file (`src/spaceapps_core/data/agro_config.json`,
+override with `AGRO_CONFIG_PATH`). No credentials needed.
+
+**No parameters.**
+
+**Response `200` — `AppCatalog`**
+```json
+{
+  "crops": [{ "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades" }],
+  "priorities": [
+    { "id": "lower-climate-risk", "name": "Menos riesgo de clima", "phrase": "tener menos riesgo de clima" }
+  ],
+  "restrictions": [{ "id": "low-water", "name": "Tendré poca agua" }],
+  "example_parameters": true
+}
+```
+
+| Field | Values |
+|---|---|
+| `priorities` | Display order; **the first one is the suggested default** |
+| `cycle_months` | Crop cycle length in months (= length of `kc_by_month`) |
+| `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
+| `example_parameters` | True while any block of the JSON is still flagged `"_example": true` |
+
+---
+
+### `POST /api/v1/app/recommendation`
+Rotation recommendation for the app's **Qué sembrar**, "¿Cuándo siembro?" and
+"Rotación" screens. Computes **all three scenarios at once** so the app can
+switch scenario without another request. Uses **NASA POWER only** (no
+credentials) plus the agronomic parameter file.
+
+**How it is computed**
+
+1. **Scenario climate:** per scenario (`heavy_rains`, `normal`, `dry`), the
+   reference years listed in `scenarios` are pulled from POWER daily
+   (`PRECTOTCORR`, `T2M_MAX`, `T2M_MIN`) and averaged per month of the year:
+   rainfall as the mean of the monthly totals, temperatures as the mean of the
+   daily values.
+2. **Monthly ET0:** Hargreaves-Samani (`services/et0.py: reference_et0`) from
+   `T2M_MAX`, `T2M_MIN` and the extraterrestrial radiation for the latitude at
+   mid-month. Isolated on purpose so Penman-Monteith can replace it.
+3. **Calendar:** the first crop starts in the **month** of `planting_date` and
+   each next crop starts when the previous one ends; each duration is the
+   length of its `kc_by_month`.
+4. **Irrigation:** per calendar month,
+   `max(0, ET0 x Kc x days_in_month - effective rainfall)` in mm
+   (`effective rainfall = monthly rainfall x effective_rain_fraction`),
+   times `area_ha` times 10 for m³. Summed per crop and per rotation.
+5. **Risk months:** months of the year whose scenario rainfall is above
+   `risk_month_rain_mm`. An option's risk is how many months of **its** own
+   calendar land on those, levelled `low` / `medium` / `high` with
+   `climate_risk_medium_months` and `climate_risk_high_months`.
+6. **Soil:** today's condition comes from the last crop and how many campaigns
+   in a row it has been grown
+   (`soil_baseline_score + crop impact x (campaigns - soil_campaigns_before_penalty)`,
+   clamped to the `very_tired` → `good` scale). The "in two years" condition
+   applies each crop's `soil_impact`, repeating the rotation until
+   `soil_horizon_months` is covered.
+7. **Restrictions:** every option carries `excluded_by`; **no option is
+   dropped** from the response (the app hides them). A restriction excludes by
+   crop (`excludes_crop_ids`) or by water use (`excludes_high_water_use`, when
+   water per hectare is above `low_water_m3_per_ha` **in any scenario**).
+8. **Ranking per priority and scenario** — computed for **every** priority of
+   the catalog, not only the chosen one: `least_water` (less
+   irrigation), `most_soil_improvement` (best soil gain, ties broken by fewer
+   risk months) and `least_climate_risk` (fewer risk months, ties broken by
+   less water). Remaining ties keep the catalog order.
+
+**Body — `RecommendationRequest`** (`extra="forbid"`: an unknown field gets `422`)
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `lat` | `float` | Yes | `-90..90` |
+| `lon` | `float` | Yes | `-180..180` |
+| `planting_date` | `date` | Yes | Entered by the farmer |
+| `area_ha` | `float` | No (`1.0`) | `> 0` |
+| `last_crop_id` | `string \| null` | No (`null`) | `null` uses `defaults.last_crop_id` |
+| `consecutive_campaigns` | `int` | No (`1`) | `>= 0` |
+| `priority_id` | `string \| null` | No (`null`) | `null` uses the first priority |
+| `restriction_ids` | `string[]` | No (`[]`) | Catalog ids |
+
+```json
+{
+  "lat": -5.19, "lon": -80.63, "area_ha": 2.0,
+  "planting_date": "2026-12-15",
+  "last_crop_id": "rice", "consecutive_campaigns": 3,
+  "priority_id": "save-water", "restriction_ids": ["low-water"]
+}
+```
+
+An unknown `priority_id`, `restriction_id` or `last_crop_id` returns
+`400 invalid_request` **without** calling NASA POWER.
+
+**Response `200` — `RecommendationResponse`**: see the Spanish reference
+(`API.md`) for a full example.
+
+| Field | Values |
+|---|---|
+| `options[]` | `id`, `crop_ids`, `cycle_months`, `soil_impact`, `soil_impact_score`, `soil_in_two_years`, `factsheet`, `excluded_by`, `calendar`, `long_term_plan`, `scenarios` |
+| `options[].scenarios` | Always the three keys `heavy_rains`, `normal`, `dry`; each with `irrigation_m3`, `irrigation_m3_per_ha`, `risk_months`, `risk_month_count`, `climate_risk` and the per-month `monthly` breakdown |
+| `options[].calendar` | `planting_date`, `decision_deadline`, `timeline_start`, `timeline_months`, `periods[]` (`crop_id`, `start`, `month_count`), `instructions` |
+| `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
+| `soil_in_two_years`, `soil_health.condition`, `soil_after` | `very_tired`, `tired`, `regular`, `good` |
+| `climate_risk` | `low`, `medium`, `high` |
+| `ranking` | `priority → scenario → ids` of **every** option, best first. **All** catalog priorities are included, so switching priority or scenario in the app needs no new request |
+| `irrigation_m3` | Water for the **whole rotation cycle** (mind that `cycle_months` differs per option) |
+| `risk_months` (root) | Risk months of the planning horizon, per scenario |
+| `current_practice` | The last crop repeated `defaults.current_practice_campaigns` times |
+| `scenario_notes`, `repeat_warnings`, `irrigation_source`, `factsheet` | Texts from the parameter file |
+| `climate_basis` | Source, reference years per scenario, ET0 method, thresholds and the monthly climate used |
+| `example_parameters` | True while the JSON still holds example values |
+
+**Errors**
+
+| Code | When |
+|---|---|
+| `400 invalid_request` | Unknown `priority_id`, `restriction_ids` or `last_crop_id` |
+| `422 validation_error` | Missing, out-of-range or undeclared body field |
+| `502 upstream_error` | NASA POWER returned incomplete data for the reference years |
+| `503 not_configured` | `agro_config.json` is unreadable or inconsistent |
+
