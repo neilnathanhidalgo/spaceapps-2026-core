@@ -27,16 +27,13 @@ class Settings(BaseSettings):
     cache_ttl_forecast: int = 1800
     cache_ttl_history: int = 86400
     cache_ttl_projections: int = 604800
-    cache_ttl_satellite: int = 43200
+    cache_ttl_static: int = 2592000
 
     http_timeout: float = 30.0
     http_retries: int = 3
 
     earthdata_username: str = Field(default="")
     earthdata_password: str = Field(default="")
-
-    copernicus_client_id: str = Field(default="")
-    copernicus_client_secret: str = Field(default="")
 
     @field_validator("cors_origins")
     @classmethod
@@ -52,10 +49,6 @@ class Settings(BaseSettings):
     @property
     def earthdata_configured(self) -> bool:
         return bool(self.earthdata_username and self.earthdata_password)
-
-    @property
-    def copernicus_configured(self) -> bool:
-        return bool(self.copernicus_client_id and self.copernicus_client_secret)
 
 
 @lru_cache

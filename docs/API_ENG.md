@@ -19,18 +19,23 @@ Generated from the code in `src/spaceapps_core/`.
 - [Climate](#climate)
   - `GET /api/v1/climate/history`
   - `GET /api/v1/climate/forecast`
+  - `GET /api/v1/climate/reanalysis`
 - [Precipitation](#precipitation)
   - `GET /api/v1/precipitation`
 - [Vegetation (async)](#vegetation)
   - `POST /api/v1/vegetation/jobs`
 - [Soil moisture (async)](#soil-moisture)
   - `POST /api/v1/soil-moisture/jobs`
+- [Water stress (async)](#water-stress)
+  - `POST /api/v1/water-stress/jobs`
+- [Terrain (async)](#terrain)
+  - `POST /api/v1/terrain/jobs`
 - [Jobs](#jobs)
   - `GET /api/v1/jobs/{job_id}`
 - [Climate projections](#climate-projections)
   - `GET /api/v1/projections`
-- [Sentinel-2](#sentinel-2)
-  - `GET /api/v1/sentinel-2/scenes`
+- [Crop suitability](#crop-suitability)
+  - `GET /api/v1/crop-suitability`
 - [Features (multi-source table)](#features-multi-source-table)
   - `GET /api/v1/features`
 - [Mobile app](#mobile-app)
@@ -102,15 +107,20 @@ Every application error follows this envelope:
 | `t2m_max` | `degC` | Daily max air temperature at 2 m | POWER, Open-Meteo, NEX-GDDP |
 | `t2m_min` | `degC` | Daily min air temperature at 2 m | POWER, Open-Meteo, NEX-GDDP |
 | `precipitation` | `mm/day` | Daily precipitation (bias-corrected when available) | POWER, Open-Meteo, IMERG, NEX-GDDP |
-| `rh2m` | `%` | Daily mean relative humidity at 2 m | POWER |
+| `rh2m` | `%` | Daily mean relative humidity at 2 m | POWER, Open-Meteo, ERA5 |
 | `solar_radiation` | `MJ/m^2/day` | All-sky surface shortwave downward irradiance | POWER, Open-Meteo |
 | `wind2m` | `m/s` | Daily mean wind speed at 2 m | POWER, Open-Meteo |
-| `ndvi` | `index` | NDVI (-1..1) | AppEEARS MODIS/VIIRS |
+| `ndvi` | `index` | NDVI (-1..1) | AppEEARS MODIS, HLS (Landsat + Sentinel-2) |
 | `evi` | `index` | EVI | AppEEARS MODIS |
 | `soil_moisture` | `m^3/m^3` | Volumetric soil moisture | AppEEARS SMAP |
 | `soil_wetness` | `fraction` | Surface soil wetness (0 dry, 1 saturated), MERRA-2 | POWER (`GWETTOP`) |
 | `precipitation_probability` | `%` | Daily maximum probability of precipitation | Open-Meteo |
 | `weather_code` | `wmo_code` | WMO weather code of the day | Open-Meteo |
+| `evaporative_stress_index` | `fraction` | Evaporative Stress Index (0 severe stress, 1 no stress) | AppEEARS ECOSTRESS |
+| `elevation` | `m` | Terrain elevation above sea level | AppEEARS SRTM |
+
+Variables served by Open-Meteo can also be requested from ERA5
+(`/climate/reanalysis`), except `precipitation_probability` and `weather_code`.
 
 ---
 
@@ -136,7 +146,8 @@ Probes every upstream in parallel. Returns status and latency.
     { "name": "appeears",    "status": "not_configured", "latency_ms": null, "message": "EARTHDATA_USERNAME/PASSWORD unset" },
     { "name": "earthdata",   "status": "ok", "latency_ms": 341.7, "message": null },
     { "name": "nex_gddp",    "status": "ok", "latency_ms": 180.0, "message": null },
-    { "name": "copernicus",  "status": "ok", "latency_ms": 253.2, "message": null }
+    { "name": "era5",        "status": "ok", "latency_ms": 120.5, "message": null },
+    { "name": "fao_gaez",    "status": "ok", "latency_ms": 870.3, "message": null }
   ]
 }
 ```
@@ -204,6 +215,17 @@ Per-series `metadata`:
 }
 ```
 
+### `GET /api/v1/climate/reanalysis`
+Daily **ECMWF ERA5** reanalysis served by Open-Meteo's historical API
+(`models=era5`, ~0.25°). Covers 1940 to ~5 days ago, handy to compare the
+current season with El Niño years. No credentials required.
+
+**Query params**: `lat`, `lon`, `start`, `end`, `format` and `variables`
+(default `t2m_mean, t2m_max, t2m_min, precipitation, solar_radiation, wind2m, rh2m`).
+
+**Response `200` — `list[TimeSeries]`**, with `source = "era5"` and
+`metadata.api = "open_meteo_archive"`.
+
 ---
 
 ## Precipitation
@@ -231,8 +253,8 @@ Requires Earthdata credentials; without them responds `503 not_configured`.
 ## Vegetation
 
 ### `POST /api/v1/vegetation/jobs`
-Fires an async **AppEEARS** job to extract MODIS NDVI and EVI
-(`MOD13Q1.061`) at a point. Returns the `job_id` immediately; retrieve the
+Fires an async **AppEEARS** job to extract vegetation indices at a point,
+from MODIS or from HLS (Landsat + Sentinel-2). Returns the `job_id` immediately; retrieve the
 result via `GET /api/v1/jobs/{job_id}`.
 
 Requires Earthdata credentials.
@@ -244,15 +266,21 @@ Requires Earthdata credentials.
 | `lon` | `float` | yes |
 | `start` | `date` | yes |
 | `end` | `date` | yes |
+| `sensor` | `modis\|hls` | no (default `modis`) |
 
 **Response `200`**
 ```json
 { "job_id": "<task_id>", "source": "appeears_modis", "status": "queued" }
 ```
 
-Layers requested from the upstream:
-- `MOD13Q1.061 / _250m_16_days_NDVI` → `ndvi`
-- `MOD13Q1.061 / _250m_16_days_EVI` → `evi`
+Layers requested from the upstream, by `sensor`:
+
+| `sensor` | `source` | Layers | Resolution |
+|---|---|---|---|
+| `modis` | `appeears_modis` | `MOD13Q1.061 / _250m_16_days_NDVI` → `ndvi`, `MOD13Q1.061 / _250m_16_days_EVI` → `evi` | 250 m, 16-day composites since 2000 |
+| `hls` | `appeears_hls` | `HLSL30_VI.020 / NDVI` (Landsat) and `HLSS30_VI.020 / NDVI` (Sentinel-2) → `ndvi` | 30 m, every 2-3 days since 2013 |
+
+With `hls` the result holds two `ndvi` series; tell them apart by `metadata.product`.
 
 ---
 
@@ -273,6 +301,45 @@ Requires Earthdata credentials.
 
 Requested layer: `SPL3SMP_E.006 / Soil_Moisture_Retrieval_Data_AM_soil_moisture`
 → `soil_moisture`.
+
+---
+
+## Water stress
+
+### `POST /api/v1/water-stress/jobs`
+Async **AppEEARS** job for the **ECOSTRESS** Evaporative Stress Index
+(`ECO_L4T_ESI.002`, 70 m). It tells how short of water the crop is:
+`0` = severe stress, `1` = no stress. Data since 2018-07-10, with irregular
+overpasses (ISS orbit).
+
+Requires Earthdata credentials.
+
+**Query params**: `lat`, `lon`, `start`, `end`.
+
+**Response `200`**
+```json
+{ "job_id": "<task_id>", "source": "appeears_ecostress", "status": "queued" }
+```
+
+Requested layer: `ECO_L4T_ESI.002 / ESI` → `evaporative_stress_index`.
+
+---
+
+## Terrain
+
+### `POST /api/v1/terrain/jobs`
+Async **AppEEARS** job for **SRTM** elevation (`SRTMGL1_NC.003`, 30 m). It is
+static data: dates are pinned to the SRTM mission (2000-02-11 to 2000-02-21),
+so it only takes `lat` and `lon`.
+
+Requires Earthdata credentials.
+
+**Response `200`**
+```json
+{ "job_id": "<task_id>", "source": "appeears_srtm", "status": "queued" }
+```
+
+Requested layer: `SRTMGL1_NC.003 / SRTMGL1_DEM` → `elevation`.
 
 ---
 
@@ -302,7 +369,8 @@ While not yet `done`:
 }
 ```
 
-Once finished, `series` carries one `TimeSeries` per layer; for NDVI/EVI the
+Once finished, `series` carries one `TimeSeries` per layer (AppEEARS writes one
+CSV per product and all of them are merged); for NDVI/EVI the
 per-series `metadata` is:
 ```json
 {
@@ -366,41 +434,56 @@ Per-series `metadata`:
 
 ---
 
-## Sentinel-2
+## Crop suitability
 
-### `GET /api/v1/sentinel-2/scenes`
-STAC search for Sentinel-2 scenes on **Copernicus Data Space** that intersect
-a small bbox (± 0.01°) around the point. **Does not** download assets.
+### `GET /api/v1/crop-suitability`
+**FAO GAEZ v4** rainfed crop suitability index for the 1981-2010 baseline
+climate, on ~9 km cells. No credentials required.
+
+> In irrigated coastal valleys (e.g. coastal Piura) rainfed suitability is `0`
+> for almost every crop: the index reflects what rainfall allows, not irrigation.
+>
+> FAO's server takes ~2-4 s per crop. The first request for a cell with the 20
+> default crops can take several minutes; afterwards it is served from cache
+> (`CACHE_TTL_STATIC`, 30 days).
 
 **Query params**
 | Name | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `lat` | `float` | yes | — | |
 | `lon` | `float` | yes | — | |
-| `start` | `date` | yes | — | |
-| `end` | `date` | yes | — | |
-| `max_cloud_cover` | `float \| null` | no | `50.0` | `0..100`, percent; `null` disables the filter |
-| `limit` | `int` | no | `20` | `1..200` |
+| `input_level` | `high\|low` | no | `high` | `high`: mechanized farming; `low`: traditional |
+| `crops` | `string[]` | no | 20 crops of the pilot region | GAEZ names (`Maize`, `Wetland rice`, `White potato`…); case-insensitive |
 
-**Response `200` — `list[object]`** (one per scene)
+An unknown crop returns `400 invalid_request` with the available names in
+`error.details.available`.
 
-Each object has **only** these fields (the raw STAC feature is simplified):
-| Field | Type | Notes |
-|---|---|---|
-| `id` | `string` | STAC item id |
-| `datetime` | `string` | scene timestamp |
-| `cloud_cover` | `float \| null` | `eo:cloud_cover` |
-| `platform` | `string \| null` | `Sentinel-2A`, etc. |
-| `collection` | `string \| null` | `SENTINEL-2` |
-| `assets` | `string[]` | available asset keys |
-| `self_href` | `string \| null` | `rel=self` link of the STAC item |
+**Response `200` — `CropSuitabilityReport`**
+```json
+{
+  "location": { "lat": -5.24, "lon": -79.45, "geometry": null },
+  "period": "1981-2010",
+  "water_supply": "rainfed",
+  "input_level": "high",
+  "crops": [
+    { "crop": "Phaseolus bean", "suitability_index": 0.2788 },
+    { "crop": "Maize", "suitability_index": 0.1917 },
+    { "crop": "Cotton", "suitability_index": 0.0 }
+  ],
+  "source": "fao_gaez",
+  "retrieved_at": "2026-11-14T12:00:00"
+}
+```
+
+`crops` is sorted from most to least suitable; `suitability_index` is `null`
+when GAEZ has no data for the cell.
 
 ---
 
 ## Features (multi-source table)
 
 ### `GET /api/v1/features`
-Merges POWER (mandatory) with Open-Meteo (optional) and IMERG (optional) into
+Merges POWER (mandatory) with Open-Meteo, ERA5 and IMERG (optional) into
 a wide table, one day per row, ready for ML.
 
 **Query params**
@@ -413,6 +496,7 @@ a wide table, one day per row, ready for ML.
 | `variables` | `CanonicalVariable[]` | no | POWER bundle |
 | `include_forecast` | `bool` | no | `false` |
 | `include_imerg` | `bool` | no | `false` |
+| `include_era5` | `bool` | no | `false` |
 | `format` | `json\|csv\|parquet` | no | `json` |
 
 Resulting columns (example with `include_forecast=true&include_imerg=true`):
@@ -437,6 +521,8 @@ Resulting columns (example with `include_forecast=true&include_imerg=true`):
 
 Notes:
 - Forecast columns are omitted when `include_forecast=false`.
+- With `include_era5=true` the same variables are added with an `_era5` suffix
+  (e.g. `precipitation_era5`); those ERA5 lacks (such as `soil_wetness`) are skipped.
 - `precipitation_imerg` is omitted when `include_imerg=false` **or** when
   Earthdata credentials are missing.
 - NDVI/EVI and soil moisture **are not** served here: they go through the

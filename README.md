@@ -4,8 +4,8 @@ Backend for the **NASA Space Apps 2026** challenge
 _"Field Shift: Adapting Farms with NASA Data"_.
 
 It gives both a mobile app and an ML team a single way to pull climate,
-precipitation, vegetation, soil-moisture and projection data for any point on
-Earth, normalized into one tabular format. The same Python library that powers
+precipitation, vegetation, soil-moisture, water-stress, terrain, crop-suitability
+and projection data for any point on Earth, normalized into one tabular format. The same Python library that powers
 the HTTP API can be imported directly from a notebook, so the ML team does not
 need the service running to work with the data.
 
@@ -31,14 +31,14 @@ flowchart LR
       Clients --> APPE[AppEEARS]
       Clients --> ED[Earthdata / earthaccess]
       Clients --> NEX[NEX-GDDP-CMIP6 S3]
-      Clients --> COP[Copernicus STAC]
+      Clients --> GAEZ[FAO GAEZ]
     end
     POWER[(NASA POWER)]
-    OM[(Open-Meteo)]
-    APPE[(AppEEARS<br/>MODIS/VIIRS/SMAP)]
+    OM[(Open-Meteo<br/>forecast + ERA5)]
+    APPE[(AppEEARS<br/>MODIS/HLS/SMAP/ECOSTRESS/SRTM)]
     ED[(NASA Earthdata<br/>GPM IMERG)]
     NEX[(S3 NEX-GDDP-CMIP6)]
-    COP[(Copernicus Data Space)]
+    GAEZ[(FAO GAEZ v4<br/>ImageServer)]
 ```
 
 Every client returns the same `TimeSeries` schema:
@@ -60,10 +60,16 @@ class TimeSeries:
 |---|---|---|---|---|
 | **NASA POWER** (`clients/power.py`) | Daily agroclimatology at a point: temperature (mean/max/min), bias-corrected precipitation, humidity, surface shortwave radiation, wind | ~0.5° | Daily (~1-day latency) | None |
 | **Open-Meteo** (`clients/open_meteo.py`) | 1-16 day daily forecast with the same canonical variables | ~0.1° | Hourly refresh | None |
-| **AppEEARS** (`clients/appeears.py`) | MODIS/VIIRS NDVI/EVI and SMAP soil moisture, asynchronous job flow | Product-native (250 m / 500 m / 9 km) | Per-product | Earthdata login |
+| **ERA5** (`clients/open_meteo.py`) | ECMWF reanalysis since 1940 via Open-Meteo's historical API | ~0.25° | Daily (~5-day latency) | None |
+| **AppEEARS** (`clients/appeears.py`) | Asynchronous jobs: MODIS NDVI/EVI, HLS (Landsat + Sentinel-2) NDVI, SMAP soil moisture, ECOSTRESS evaporative stress index, SRTM elevation | 250 m / 30 m / 9 km / 70 m / 30 m | Per-product | Earthdata login |
 | **Earthdata / IMERG** (`clients/earthdata.py`) | GPM IMERG daily precipitation + generic search by `short_name` | 0.1° | Daily (final run has ~month latency) | Earthdata login |
 | **NEX-GDDP-CMIP6** (`clients/nex_gddp.py`) | Daily downscaled climate projections (SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5) | 0.25° | N/A (static CMIP6) | Anonymous S3 |
-| **Copernicus Data Space** (`clients/copernicus.py`) | Sentinel-2 scene search (NDVI computation = TODO) | 10-60 m | Every 5 days | Public STAC (no auth for search) |
+| **FAO GAEZ v4** (`clients/gaez.py`) | Rainfed crop suitability index (0-1) per crop, 1981-2010 baseline | ~9 km | Static | None |
+
+Sources from the Space Apps resource list that only cover the United States
+(SSURGO/STATSGO2, Web Soil Survey, CDL, PRISM, NAIP, NLDAS, CoCoRaHS, NWIS,
+USDA NASS/AMS, OpenET, LANDFIRE) are intentionally left out: the pilot zone is
+Piura, Peru.
 
 ## Getting Earthdata credentials
 
@@ -115,12 +121,15 @@ is stubbed with `respx`).
 | GET | `/health/sources` | Probes every upstream in parallel; returns `ok` / `error` / `not_configured` with per-source latency |
 | GET | `/api/v1/climate/history` | NASA POWER daily agroclimatology at a point |
 | GET | `/api/v1/climate/forecast` | Open-Meteo 1-16 day daily forecast |
+| GET | `/api/v1/climate/reanalysis` | ERA5 daily reanalysis at a point |
 | GET | `/api/v1/precipitation` | GPM IMERG daily precipitation (via earthaccess) |
-| POST | `/api/v1/vegetation/jobs` | Submit MODIS NDVI/EVI AppEEARS task |
+| POST | `/api/v1/vegetation/jobs` | Submit vegetation AppEEARS task (`sensor=modis` NDVI/EVI or `sensor=hls` 30 m NDVI) |
 | POST | `/api/v1/soil-moisture/jobs` | Submit SMAP soil-moisture AppEEARS task |
+| POST | `/api/v1/water-stress/jobs` | Submit ECOSTRESS evaporative stress index AppEEARS task |
+| POST | `/api/v1/terrain/jobs` | Submit SRTM elevation AppEEARS task |
 | GET | `/api/v1/jobs/{job_id}` | Check status / parsed result of an AppEEARS task |
 | GET | `/api/v1/projections` | NEX-GDDP-CMIP6 projections at a point (SSP2-4.5 default) |
-| GET | `/api/v1/sentinel-2/scenes` | Sentinel-2 scene search (Copernicus STAC) |
+| GET | `/api/v1/crop-suitability` | FAO GAEZ rainfed suitability per crop, most suitable first |
 | GET | `/api/v1/features` | Daily multi-source table ready for ML; one column per variable |
 | GET | `/api/v1/app/climate-overview` | Ready-to-render summary for the mobile app's Clima screen (Open-Meteo forecast + NASA POWER anomalies) |
 
@@ -183,9 +192,9 @@ TTLs per source are configurable via `.env`:
 | Variable | Default | Used by |
 |---|---|---|
 | `CACHE_TTL_FORECAST` | 1800 s | Open-Meteo forecast |
-| `CACHE_TTL_HISTORY` | 86400 s | POWER, IMERG |
+| `CACHE_TTL_HISTORY` | 86400 s | POWER, IMERG, ERA5 |
 | `CACHE_TTL_PROJECTIONS` | 604800 s | NEX-GDDP-CMIP6 |
-| `CACHE_TTL_SATELLITE` | 43200 s | Copernicus scene search |
+| `CACHE_TTL_STATIC` | 2592000 s | FAO GAEZ catalog and samples |
 
 ## Testing
 

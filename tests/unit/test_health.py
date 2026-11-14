@@ -17,12 +17,17 @@ def test_openapi_served(client) -> None:
     assert "/health/sources" in paths
     assert "/api/v1/climate/history" in paths
     assert "/api/v1/climate/forecast" in paths
+    assert "/api/v1/climate/reanalysis" in paths
     assert "/api/v1/precipitation" in paths
     assert "/api/v1/vegetation/jobs" in paths
     assert "/api/v1/soil-moisture/jobs" in paths
+    assert "/api/v1/water-stress/jobs" in paths
+    assert "/api/v1/terrain/jobs" in paths
+    assert "/api/v1/crop-suitability" in paths
     assert "/api/v1/jobs/{job_id}" in paths
     assert "/api/v1/projections" in paths
     assert "/api/v1/features" in paths
+    assert "/api/v1/sentinel-2/scenes" not in paths
 
 
 def test_error_envelope_consistent(client) -> None:

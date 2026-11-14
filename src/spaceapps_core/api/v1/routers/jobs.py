@@ -55,13 +55,10 @@ async def get_job_endpoint(job_id: str) -> JobResult:
     series = []
     if status.status == "done":
         files = await client.list_bundle(job_id)
-        csv_file = next(
-            (f for f in files if (f.get("file_name") or "").lower().endswith(".csv")),
-            None,
-        )
-        if csv_file is not None:
+        csv_files = [f for f in files if (f.get("file_name") or "").lower().endswith(".csv")]
+        for csv_file in csv_files:
             content = await client.download_file(job_id, csv_file["file_id"])
-            series = client.parse_point_csv(content, entry.layers, entry.location)
+            series.extend(client.parse_point_csv(content, entry.layers, entry.location))
 
     return JobResult(id=job_id, status=status, series=series)
 

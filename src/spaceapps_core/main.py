@@ -23,7 +23,6 @@ async def lifespan(_: FastAPI):
         app=settings.app_name,
         env=settings.app_env,
         earthdata_configured=settings.earthdata_configured,
-        copernicus_configured=settings.copernicus_configured,
     )
     yield
 
@@ -35,8 +34,9 @@ def create_app() -> FastAPI:
         version=__version__,
         description=(
             "Backend for NASA Space Apps 2026 - Field Shift. "
-            "Unified access to NASA POWER, Open-Meteo, AppEEARS (MODIS/VIIRS/SMAP), "
-            "GPM IMERG, NEX-GDDP-CMIP6 and Copernicus Sentinel-2."
+            "Unified access to NASA POWER, Open-Meteo (forecast and ERA5), AppEEARS "
+            "(MODIS, HLS Landsat/Sentinel-2, SMAP, ECOSTRESS, SRTM), GPM IMERG, "
+            "NEX-GDDP-CMIP6 and FAO GAEZ."
         ),
         lifespan=lifespan,
     )

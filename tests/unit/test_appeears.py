@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from spaceapps_core.clients.appeears import (
+    HLS_NDVI_LAYERS,
     MODIS_NDVI_LAYERS,
     AppEEARSClient,
 )
@@ -120,3 +121,67 @@ def test_vegetation_route_submits_job(client, earthdata_env, monkeypatch) -> Non
     body = r.json()
     assert body["job_id"] == "job-xyz"
     assert body["source"] == "appeears_modis"
+
+
+def test_parse_point_csv_only_returns_layers_present_in_file() -> None:
+    csv_bytes = b"ID,Latitude,Longitude,Date,HLSS30_VI_020_NDVI\n0,-5.19,-80.63,2024-01-05,0.42\n"
+    series = AppEEARSClient.parse_point_csv(
+        csv_bytes, HLS_NDVI_LAYERS, Location(lat=-5.19, lon=-80.63)
+    )
+    assert len(series) == 1
+    assert series[0].metadata["product"] == "HLSS30_VI.020"
+    assert series[0].points[0].value == 0.42
+
+
+def test_parse_point_csv_ignores_lookup_tables() -> None:
+    csv_bytes = b"Value,MODLAND,VI Usefulness\n2112,0b00,0b0001\n"
+    series = AppEEARSClient.parse_point_csv(
+        csv_bytes, MODIS_NDVI_LAYERS, Location(lat=-5.19, lon=-80.63)
+    )
+    assert series == []
+
+
+def test_vegetation_route_hls_sensor(client, earthdata_env) -> None:
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post("https://appeears.earthdatacloud.nasa.gov/api/login").mock(
+            return_value=httpx.Response(200, json={"token": "tok"})
+        )
+        task_route = mock.post("https://appeears.earthdatacloud.nasa.gov/api/task").mock(
+            return_value=httpx.Response(200, json={"task_id": "job-hls"})
+        )
+
+        r = client.post(
+            "/api/v1/vegetation/jobs",
+            params={
+                "lat": -5.19,
+                "lon": -80.63,
+                "start": "2024-01-01",
+                "end": "2024-01-31",
+                "sensor": "hls",
+            },
+        )
+
+    assert r.status_code == 200
+    assert r.json()["source"] == "appeears_hls"
+    import json
+
+    layers = json.loads(task_route.calls[0].request.content)["params"]["layers"]
+    assert {layer["product"] for layer in layers} == {"HLSL30_VI.020", "HLSS30_VI.020"}
+
+
+def test_terrain_route_uses_srtm_acquisition_dates(client, earthdata_env) -> None:
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post("https://appeears.earthdatacloud.nasa.gov/api/login").mock(
+            return_value=httpx.Response(200, json={"token": "tok"})
+        )
+        task_route = mock.post("https://appeears.earthdatacloud.nasa.gov/api/task").mock(
+            return_value=httpx.Response(200, json={"task_id": "job-srtm"})
+        )
+
+        r = client.post("/api/v1/terrain/jobs", params={"lat": -5.19, "lon": -80.63})
+
+    assert r.status_code == 200
+    import json
+
+    dates = json.loads(task_route.calls[0].request.content)["params"]["dates"][0]
+    assert dates == {"startDate": "02-11-2000", "endDate": "02-21-2000"}

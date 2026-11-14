@@ -19,6 +19,8 @@ class CanonicalVariable(StrEnum):
     SOIL_WETNESS = "soil_wetness"
     PRECIPITATION_PROBABILITY = "precipitation_probability"
     WEATHER_CODE = "weather_code"
+    EVAPORATIVE_STRESS_INDEX = "evaporative_stress_index"
+    ELEVATION = "elevation"
 
 
 class VariableSpec(BaseModel):
@@ -76,6 +78,7 @@ CANONICAL_VARIABLES: dict[CanonicalVariable, VariableSpec] = {
         description="Daily mean relative humidity at 2 m.",
         source_aliases={
             "power": "RH2M",
+            "open_meteo": "relative_humidity_2m_mean",
         },
     ),
     CanonicalVariable.SOLAR_RADIATION: VariableSpec(
@@ -100,7 +103,11 @@ CANONICAL_VARIABLES: dict[CanonicalVariable, VariableSpec] = {
         name=CanonicalVariable.NDVI,
         unit="index",
         description="Normalized Difference Vegetation Index (-1 to 1).",
-        source_aliases={"appeears_modis": "_250m_16_days_NDVI", "appeears_viirs": "NDVI"},
+        source_aliases={
+            "appeears_modis": "_250m_16_days_NDVI",
+            "appeears_viirs": "NDVI",
+            "appeears_hls": "NDVI",
+        },
     ),
     CanonicalVariable.EVI: VariableSpec(
         name=CanonicalVariable.EVI,
@@ -131,5 +138,17 @@ CANONICAL_VARIABLES: dict[CanonicalVariable, VariableSpec] = {
         unit="wmo_code",
         description="Most severe WMO weather interpretation code of the day.",
         source_aliases={"open_meteo": "weather_code"},
+    ),
+    CanonicalVariable.EVAPORATIVE_STRESS_INDEX: VariableSpec(
+        name=CanonicalVariable.EVAPORATIVE_STRESS_INDEX,
+        unit="fraction",
+        description="ECOSTRESS Evaporative Stress Index (0 = severe water stress, 1 = no stress).",
+        source_aliases={"appeears_ecostress": "ESI"},
+    ),
+    CanonicalVariable.ELEVATION: VariableSpec(
+        name=CanonicalVariable.ELEVATION,
+        unit="m",
+        description="Terrain elevation above sea level (SRTM, 30 m).",
+        source_aliases={"appeears_srtm": "SRTMGL1_DEM"},
     ),
 }

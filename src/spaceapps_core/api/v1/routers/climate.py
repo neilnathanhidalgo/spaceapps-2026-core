@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from ....clients.open_meteo import (
     DEFAULT_FORECAST_VARIABLES,
+    DEFAULT_REANALYSIS_VARIABLES,
     MAX_FORECAST_DAYS,
     OpenMeteoClient,
 )
@@ -80,3 +81,21 @@ async def climate_forecast(
         variables=variables or DEFAULT_FORECAST_VARIABLES,
     )
     return format_response(series, format)
+
+
+@router.get(
+    "/reanalysis",
+    summary="Daily ECMWF ERA5 reanalysis (1940 to ~5 days ago) via Open-Meteo",
+    response_model=list[TimeSeries] | None,
+)
+async def climate_reanalysis(
+    params: dict = Depends(common_query),
+    variables: list[CanonicalVariable] | None = Query(default=None),
+) -> Response | list[TimeSeries]:
+    series = await OpenMeteoClient().reanalysis(
+        params["location"],
+        start=params["start"],
+        end=params["end"],
+        variables=variables or DEFAULT_REANALYSIS_VARIABLES,
+    )
+    return format_response(series, params["format"])

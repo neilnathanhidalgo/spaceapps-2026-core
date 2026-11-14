@@ -175,12 +175,17 @@ class AppEEARSClient(BaseClient):
 
         The CSV has one row per date; columns include at least an ISO date and a column
         per requested layer named ``<PRODUCT_VERSION>_<LAYER>`` (dots replaced by
-        underscores).
+        underscores). AppEEARS writes one CSV per product, so layers whose column
+        is absent from this file are skipped.
         """
         reader = csv.DictReader(io.StringIO(csv_bytes.decode("utf-8")))
+        fieldnames = reader.fieldnames or []
+        layers = [layer for layer in layers if layer.column_name() in fieldnames]
+        if not layers:
+            return []
 
         date_field = next(
-            (f for f in (reader.fieldnames or []) if f.lower() in {"date", "datetime"}),
+            (f for f in fieldnames if f.lower() in {"date", "datetime"}),
             None,
         )
         if date_field is None:
@@ -240,6 +245,29 @@ MODIS_NDVI_LAYERS = [
         canonical=CanonicalVariable.EVI,
     ),
 ]
+
+HLS_NDVI_LAYERS = [
+    AppEEARSLayer(product="HLSL30_VI.020", layer="NDVI", canonical=CanonicalVariable.NDVI),
+    AppEEARSLayer(product="HLSS30_VI.020", layer="NDVI", canonical=CanonicalVariable.NDVI),
+]
+
+ECOSTRESS_WATER_STRESS_LAYERS = [
+    AppEEARSLayer(
+        product="ECO_L4T_ESI.002",
+        layer="ESI",
+        canonical=CanonicalVariable.EVAPORATIVE_STRESS_INDEX,
+    ),
+]
+
+SRTM_ELEVATION_LAYERS = [
+    AppEEARSLayer(
+        product="SRTMGL1_NC.003",
+        layer="SRTMGL1_DEM",
+        canonical=CanonicalVariable.ELEVATION,
+    ),
+]
+SRTM_ACQUISITION_START = date(2000, 2, 11)
+SRTM_ACQUISITION_END = date(2000, 2, 21)
 
 SMAP_SOIL_MOISTURE_LAYERS = [
     AppEEARSLayer(

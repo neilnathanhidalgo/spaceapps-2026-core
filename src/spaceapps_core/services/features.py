@@ -12,7 +12,7 @@ from datetime import date
 import pandas as pd
 
 from ..clients.earthdata import EarthdataClient
-from ..clients.open_meteo import OpenMeteoClient
+from ..clients.open_meteo import OpenMeteoClient, supports_variable
 from ..clients.power import DEFAULT_PARAMETERS, PowerClient
 from ..core.config import get_settings
 from ..schemas.common import Location, TimeSeries
@@ -44,6 +44,7 @@ async def build_features(
     variables: list[CanonicalVariable] | None = None,
     include_forecast: bool = False,
     include_imerg: bool = False,
+    include_era5: bool = False,
 ) -> pd.DataFrame:
     variables = variables or DEFAULT_PARAMETERS
     settings = get_settings()
@@ -56,14 +57,25 @@ async def build_features(
     )
     base = _series_to_frame(power)
 
+    open_meteo_variables = [v for v in variables if supports_variable(v)]
+
     if include_forecast:
         om = await OpenMeteoClient().forecast(
             location=location,
             start=start,
             end=end,
-            variables=[v for v in variables if v != CanonicalVariable.RH2M],
+            variables=open_meteo_variables,
         )
         base = base.combine_first(_series_to_frame(om, suffix="forecast"))
+
+    if include_era5:
+        era5 = await OpenMeteoClient().reanalysis(
+            location,
+            start=start,
+            end=end,
+            variables=open_meteo_variables,
+        )
+        base = base.combine_first(_series_to_frame(era5, suffix="era5"))
 
     if include_imerg and settings.earthdata_configured:
         imerg = await EarthdataClient().imerg_daily_point(location=location, start=start, end=end)

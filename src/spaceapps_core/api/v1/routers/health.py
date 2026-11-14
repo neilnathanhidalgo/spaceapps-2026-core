@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
 import httpx
 from fastapi import APIRouter
 
+from ....clients.gaez import GAEZ_IMAGE_SERVER_URL
+from ....clients.open_meteo import OPEN_METEO_ARCHIVE_URL
 from ....core.config import get_settings
 from ....schemas.common import SourceHealth, SourcesHealth
 
@@ -71,6 +74,21 @@ async def _probe_open_meteo() -> SourceHealth:
     )
 
 
+async def _probe_era5() -> SourceHealth:
+    return await _timed_get(
+        "era5",
+        f"{OPEN_METEO_ARCHIVE_URL}/archive",
+        params={
+            "latitude": -5.19,
+            "longitude": -80.63,
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-01",
+            "daily": "temperature_2m_max",
+            "models": "era5",
+        },
+    )
+
+
 async def _probe_appeears() -> SourceHealth:
     settings = get_settings()
     if not settings.earthdata_configured:
@@ -112,11 +130,29 @@ async def _probe_nex_gddp() -> SourceHealth:
     )
 
 
-async def _probe_copernicus() -> SourceHealth:
-    return await _timed_get(
-        "copernicus",
-        "https://catalogue.dataspace.copernicus.eu/stac/collections",
-    )
+async def _probe_gaez() -> SourceHealth:
+    return await _timed_get("fao_gaez", GAEZ_IMAGE_SERVER_URL, params={"f": "json"}, timeout=15.0)
+
+
+SOURCE_PROBES: list[Callable[[], Awaitable[SourceHealth]]] = [
+    _probe_power,
+    _probe_open_meteo,
+    _probe_era5,
+    _probe_appeears,
+    _probe_earthdata,
+    _probe_nex_gddp,
+    _probe_gaez,
+]
+
+
+async def probe_sources() -> list[SourceHealth]:
+    results = await asyncio.gather(*(probe() for probe in SOURCE_PROBES), return_exceptions=True)
+    return [
+        SourceHealth(name="unknown", status="error", message=str(res))
+        if isinstance(res, BaseException)
+        else res
+        for res in results
+    ]
 
 
 @router.get(
@@ -125,19 +161,4 @@ async def _probe_copernicus() -> SourceHealth:
     summary="Probe every upstream data source in parallel",
 )
 async def health_sources() -> SourcesHealth:
-    probes = [
-        _probe_power(),
-        _probe_open_meteo(),
-        _probe_appeears(),
-        _probe_earthdata(),
-        _probe_nex_gddp(),
-        _probe_copernicus(),
-    ]
-    results = await asyncio.gather(*probes, return_exceptions=True)
-    sources: list[SourceHealth] = []
-    for res in results:
-        if isinstance(res, Exception):
-            sources.append(SourceHealth(name="unknown", status="error", message=str(res)))
-        else:
-            sources.append(res)
-    return SourcesHealth(sources=sources)
+    return SourcesHealth(sources=await probe_sources())

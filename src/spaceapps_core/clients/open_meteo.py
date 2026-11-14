@@ -14,7 +14,10 @@ from ..schemas.variables import CANONICAL_VARIABLES, CanonicalVariable
 from .base import BaseClient
 
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1"
+OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1"
 MAX_FORECAST_DAYS = 16
+ERA5_MODEL = "era5"
+ERA5_SOURCE = "era5"
 
 DEFAULT_FORECAST_VARIABLES: list[CanonicalVariable] = [
     CanonicalVariable.T2M_MEAN,
@@ -25,6 +28,11 @@ DEFAULT_FORECAST_VARIABLES: list[CanonicalVariable] = [
     CanonicalVariable.WIND2M,
 ]
 
+DEFAULT_REANALYSIS_VARIABLES: list[CanonicalVariable] = [
+    *DEFAULT_FORECAST_VARIABLES,
+    CanonicalVariable.RH2M,
+]
+
 
 def _canonical_to_om(variable: CanonicalVariable) -> str:
     alias = CANONICAL_VARIABLES[variable].source_aliases.get("open_meteo")
@@ -33,10 +41,15 @@ def _canonical_to_om(variable: CanonicalVariable) -> str:
     return alias
 
 
-class OpenMeteoClient(BaseClient):
-    """Open-Meteo forecast client (no authentication).
+def supports_variable(variable: CanonicalVariable) -> bool:
+    return "open_meteo" in CANONICAL_VARIABLES[variable].source_aliases
 
-    Documentation: https://open-meteo.com/en/docs
+
+class OpenMeteoClient(BaseClient):
+    """Open-Meteo forecast and ERA5 reanalysis client (no authentication).
+
+    Documentation: https://open-meteo.com/en/docs and
+    https://open-meteo.com/en/docs/historical-weather-api
     """
 
     source_name = "open_meteo"
@@ -46,9 +59,11 @@ class OpenMeteoClient(BaseClient):
         *,
         timeout: float | None = None,
         base_url: str = OPEN_METEO_BASE_URL,
+        archive_base_url: str = OPEN_METEO_ARCHIVE_URL,
     ) -> None:
         self.timeout = timeout
         self.base_url = base_url
+        self.archive_base_url = archive_base_url
 
     async def forecast(
         self,
@@ -69,21 +84,10 @@ class OpenMeteoClient(BaseClient):
         """
 
         variables = variables or DEFAULT_FORECAST_VARIABLES
-        om_variables = [_canonical_to_om(v) for v in variables]
-
-        params: dict[str, Any] = {
-            "latitude": location.lat,
-            "longitude": location.lon,
-            "daily": ",".join(om_variables),
-            "timezone": timezone,
-            "wind_speed_unit": "ms",
-        }
+        params = _daily_params(location, variables, timezone)
 
         if start is not None and end is not None:
-            if end < start:
-                raise InvalidRequestError("`end` must be >= `start`.")
-            params["start_date"] = start.isoformat()
-            params["end_date"] = end.isoformat()
+            params.update(_date_range_params(start, end))
         elif start is not None or end is not None:
             raise InvalidRequestError(
                 "Provide both `start` and `end` or neither (use `forecast_days`)."
@@ -96,19 +100,59 @@ class OpenMeteoClient(BaseClient):
                 )
             params["forecast_days"] = days
 
-        settings = get_settings()
-        cache_key = make_key("open_meteo:forecast", params)
+        data = await self._fetch(
+            self.base_url,
+            "/forecast",
+            params,
+            ttl=get_settings().cache_ttl_forecast,
+            use_cache=use_cache,
+        )
+        return _parse_daily(data, location, variables, source=self.source_name, api="open_meteo")
 
+    async def reanalysis(
+        self,
+        location: Location,
+        *,
+        start: date,
+        end: date,
+        variables: list[CanonicalVariable] | None = None,
+        use_cache: bool = True,
+    ) -> list[TimeSeries]:
+        """Daily ECMWF ERA5 reanalysis (1940 to ~5 days ago) served by Open-Meteo."""
+
+        variables = variables or DEFAULT_REANALYSIS_VARIABLES
+        params = {
+            **_daily_params(location, variables, "UTC"),
+            **_date_range_params(start, end),
+            "models": ERA5_MODEL,
+        }
+        data = await self._fetch(
+            self.archive_base_url,
+            "/archive",
+            params,
+            ttl=get_settings().cache_ttl_history,
+            use_cache=use_cache,
+        )
+        return _parse_daily(data, location, variables, source=ERA5_SOURCE, api="open_meteo_archive")
+
+    async def _fetch(
+        self,
+        base_url: str,
+        path: str,
+        params: dict[str, Any],
+        *,
+        ttl: int,
+        use_cache: bool,
+    ) -> dict[str, Any]:
         async def fetch() -> dict[str, Any]:
-            async with async_client(base_url=self.base_url, timeout=self.timeout) as c:
-                return await self._get(c, "/forecast", params=params)
+            async with async_client(base_url=base_url, timeout=self.timeout) as c:
+                return await self._get(c, path, params=params)
 
-        if use_cache:
-            data, _ = await async_cached_or_set(cache_key, fetch, settings.cache_ttl_forecast)
-        else:
-            data = await fetch()
-
-        return self._parse_forecast(data, location, variables)
+        if not use_cache:
+            return await fetch()
+        cache_key = make_key(f"open_meteo:{path.strip('/')}", params)
+        data, _ = await async_cached_or_set(cache_key, fetch, ttl)
+        return data
 
     @staticmethod
     async def _get(c: httpx.AsyncClient, path: str, *, params: dict) -> dict[str, Any]:
@@ -120,40 +164,61 @@ class OpenMeteoClient(BaseClient):
             )
         return r.json()
 
-    def _parse_forecast(
-        self,
-        payload: dict[str, Any],
-        location: Location,
-        variables: list[CanonicalVariable],
-    ) -> list[TimeSeries]:
-        daily = payload.get("daily") or {}
-        daily_units = payload.get("daily_units") or {}
-        times = daily.get("time") or []
-        dates = [datetime.strptime(t, "%Y-%m-%d").date() for t in times]
 
-        series: list[TimeSeries] = []
-        for canonical in variables:
-            om_name = _canonical_to_om(canonical)
-            values = daily.get(om_name) or []
-            points = [
-                TimePoint(date=d, value=(float(v) if v is not None else None))
-                for d, v in zip(dates, values, strict=False)
-            ]
-            series.append(
-                TimeSeries(
-                    source=self.source_name,
-                    variable=canonical,
-                    unit=CANONICAL_VARIABLES[canonical].unit,
-                    location=location,
-                    temporal_resolution="daily",
-                    points=points,
-                    metadata={
-                        "source_variable": om_name,
-                        "source_unit": daily_units.get(om_name),
-                        "api": "open_meteo",
-                        "timezone": payload.get("timezone"),
-                        "model_elevation": payload.get("elevation"),
-                    },
-                )
+def _daily_params(
+    location: Location, variables: list[CanonicalVariable], timezone: str
+) -> dict[str, Any]:
+    return {
+        "latitude": location.lat,
+        "longitude": location.lon,
+        "daily": ",".join(_canonical_to_om(v) for v in variables),
+        "timezone": timezone,
+        "wind_speed_unit": "ms",
+    }
+
+
+def _date_range_params(start: date, end: date) -> dict[str, str]:
+    if end < start:
+        raise InvalidRequestError("`end` must be >= `start`.")
+    return {"start_date": start.isoformat(), "end_date": end.isoformat()}
+
+
+def _parse_daily(
+    payload: dict[str, Any],
+    location: Location,
+    variables: list[CanonicalVariable],
+    *,
+    source: str,
+    api: str,
+) -> list[TimeSeries]:
+    daily = payload.get("daily") or {}
+    daily_units = payload.get("daily_units") or {}
+    times = daily.get("time") or []
+    dates = [datetime.strptime(t, "%Y-%m-%d").date() for t in times]
+
+    series: list[TimeSeries] = []
+    for canonical in variables:
+        om_name = _canonical_to_om(canonical)
+        values = daily.get(om_name) or []
+        points = [
+            TimePoint(date=d, value=(float(v) if v is not None else None))
+            for d, v in zip(dates, values, strict=False)
+        ]
+        series.append(
+            TimeSeries(
+                source=source,
+                variable=canonical,
+                unit=CANONICAL_VARIABLES[canonical].unit,
+                location=location,
+                temporal_resolution="daily",
+                points=points,
+                metadata={
+                    "source_variable": om_name,
+                    "source_unit": daily_units.get(om_name),
+                    "api": api,
+                    "timezone": payload.get("timezone"),
+                    "model_elevation": payload.get("elevation"),
+                },
             )
-        return series
+        )
+    return series

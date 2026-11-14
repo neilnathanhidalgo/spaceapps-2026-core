@@ -15,7 +15,7 @@ router = APIRouter(prefix="/features", tags=["features"])
 
 @router.get(
     "",
-    summary="Merged daily feature table (POWER + optional Open-Meteo + IMERG)",
+    summary="Merged daily feature table (POWER + optional Open-Meteo, ERA5 and IMERG)",
     response_model=None,
 )
 async def features(
@@ -26,6 +26,7 @@ async def features(
     variables: list[CanonicalVariable] | None = Query(default=None),
     include_forecast: bool = Query(default=False),
     include_imerg: bool = Query(default=False),
+    include_era5: bool = Query(default=False),
     format: OutputFormat = Query("json"),
 ) -> Response | list[dict]:
     df = await build_features(
@@ -35,6 +36,7 @@ async def features(
         variables=variables,
         include_forecast=include_forecast,
         include_imerg=include_imerg,
+        include_era5=include_era5,
     )
 
     df_out = df.copy()

@@ -97,3 +97,35 @@ def test_forecast_router(client) -> None:
     data = r.json()
     assert isinstance(data, list)
     assert any(s["variable"] == "precipitation" for s in data)
+
+
+@pytest.mark.asyncio
+async def test_era5_reanalysis_parses() -> None:
+    async with respx.mock(assert_all_called=True) as mock:
+        route = mock.get("https://archive-api.open-meteo.com/v1/archive").mock(
+            return_value=httpx.Response(200, json=_fake_om_payload())
+        )
+
+        series = await OpenMeteoClient().reanalysis(
+            Location(lat=-5.19, lon=-80.63),
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 3),
+            variables=[CanonicalVariable.PRECIPITATION],
+            use_cache=False,
+        )
+
+    assert route.calls[0].request.url.params["models"] == "era5"
+    assert len(series) == 1
+    assert series[0].source == "era5"
+    assert series[0].points[1].value == 1.2
+
+
+@pytest.mark.asyncio
+async def test_era5_rejects_inverted_range() -> None:
+    with pytest.raises(InvalidRequestError):
+        await OpenMeteoClient().reanalysis(
+            Location(lat=0, lon=0),
+            start=date(2024, 2, 1),
+            end=date(2024, 1, 1),
+            use_cache=False,
+        )

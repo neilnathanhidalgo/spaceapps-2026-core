@@ -7,9 +7,10 @@ TimeSeries without the caller needing to re-specify the product/layer mapping.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import date
 from typing import Any
 
-from ..clients.appeears import AppEEARSLayer
+from ..clients.appeears import AppEEARSClient, AppEEARSLayer
 from ..core.cache import get_cache
 from ..schemas.common import Location
 from ..schemas.variables import CanonicalVariable
@@ -63,3 +64,23 @@ def get_job(task_id: str) -> JobRegistryEntry | None:
     if raw is None:
         return None
     return JobRegistryEntry.from_cache(dict(raw))
+
+
+async def submit_job(
+    *,
+    source: str,
+    layers: list[AppEEARSLayer],
+    location: Location,
+    start: date,
+    end: date,
+) -> dict[str, str]:
+    task_id = await AppEEARSClient().submit_point_task(
+        location=location,
+        start=start,
+        end=end,
+        layers=layers,
+    )
+    register_job(
+        JobRegistryEntry(task_id=task_id, source=source, location=location, layers=layers)
+    )
+    return {"job_id": task_id, "source": source, "status": "queued"}
