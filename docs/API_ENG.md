@@ -33,6 +33,8 @@ Generated from the code in `src/spaceapps_core/`.
   - `GET /api/v1/sentinel-2/scenes`
 - [Features (multi-source table)](#features-multi-source-table)
   - `GET /api/v1/features`
+- [Mobile app](#mobile-app)
+  - `GET /api/v1/app/climate-overview`
 
 ---
 
@@ -106,6 +108,9 @@ Every application error follows this envelope:
 | `ndvi` | `index` | NDVI (-1..1) | AppEEARS MODIS/VIIRS |
 | `evi` | `index` | EVI | AppEEARS MODIS |
 | `soil_moisture` | `m^3/m^3` | Volumetric soil moisture | AppEEARS SMAP |
+| `soil_wetness` | `fraction` | Surface soil wetness (0 dry, 1 saturated), MERRA-2 | POWER (`GWETTOP`) |
+| `precipitation_probability` | `%` | Daily maximum probability of precipitation | Open-Meteo |
+| `weather_code` | `wmo_code` | WMO weather code of the day | Open-Meteo |
 
 ---
 
@@ -441,3 +446,31 @@ Notes:
 - `format=json` → `list[object]`, one object per row.
 - `format=csv` → `text/csv`.
 - `format=parquet` → `application/octet-stream` (Parquet).
+
+---
+
+## Mobile app
+
+### `GET /api/v1/app/climate-overview`
+Ready-to-render summary for the **Clima** screen of the app (Siembra Segura).
+No credentials needed.
+
+- 7-day **Open-Meteo** forecast in the point's local time zone.
+- Comparison with a normal year: last 30 valid days of **NASA POWER** daily
+  data against the **NASA POWER** monthly climatology for the same dates:
+  rainfall (`PRECTOTCORR`), mean temperature (`T2M`) and soil wetness
+  (`GWETTOP`).
+- If POWER fails, the response is still `200` with `anomalies: []`.
+
+**Query params**: `lat`, `lon` (required).
+
+**Response `200` — `ClimateOverview`**: see the Spanish reference
+(`API.md`) for a full example.
+
+| Field | Values |
+|---|---|
+| `condition` | `sunny`, `cloudy`, `rain` (≥ 1 mm), `moderate_rain` (≥ 10 mm), `heavy_rain` (≥ 30 mm) |
+| `metric` | `rainfall`, `temperature`, `soil_moisture` |
+| `comparison.type` | `times_normal` (`factor` > 0, clamped to 0.1–10), `degrees_from_normal` (`delta` in °C), `moisture_category` (`level`: `dry`, `normal`, `wet`, `very_wet`; ±0.1 and +0.2 thresholds on `GWETTOP`) |
+| `observed_level`, `normal_level` | Bar position (0..1) |
+| `advice` | Spanish text starting in lowercase; the app prefixes it with "Qué hacer:" |

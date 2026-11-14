@@ -33,6 +33,8 @@ Generado a partir del código en `src/spaceapps_core/`.
   - `GET /api/v1/sentinel-2/scenes`
 - [Features (tabla multi-fuente)](#features-tabla-multi-fuente)
   - `GET /api/v1/features`
+- [App móvil](#app-móvil)
+  - `GET /api/v1/app/climate-overview`
 
 ---
 
@@ -106,6 +108,9 @@ Todos los errores de aplicación siguen este envelope:
 | `ndvi` | `index` | NDVI (-1..1) | AppEEARS MODIS/VIIRS |
 | `evi` | `index` | EVI | AppEEARS MODIS |
 | `soil_moisture` | `m^3/m^3` | Humedad del suelo volumétrica | AppEEARS SMAP |
+| `soil_wetness` | `fraction` | Humedad superficial del suelo (0 seco, 1 saturado), MERRA-2 | POWER (`GWETTOP`) |
+| `precipitation_probability` | `%` | Probabilidad máxima diaria de lluvia | Open-Meteo |
+| `weather_code` | `wmo_code` | Código WMO del tiempo del día | Open-Meteo |
 
 ---
 
@@ -441,3 +446,51 @@ Notas:
 - `format=json` → `list[object]`, un objeto por fila.
 - `format=csv` → `text/csv`.
 - `format=parquet` → `application/octet-stream` (Parquet).
+
+---
+
+## App móvil
+
+### `GET /api/v1/app/climate-overview`
+Resumen listo para pintar la pantalla **Clima** de la app (Siembra Segura).
+No requiere credenciales.
+
+- Pronóstico de 7 días de **Open-Meteo** en la zona horaria local del punto.
+- Comparación con un año normal: últimos 30 días válidos de **NASA POWER**
+  (diario) frente a la climatología mensual de **NASA POWER** para las mismas
+  fechas: lluvia (`PRECTOTCORR`), temperatura media (`T2M`) y humedad del
+  suelo (`GWETTOP`).
+- Si POWER falla, la respuesta sigue siendo `200` con `anomalies: []`.
+
+**Query params**: `lat`, `lon` (obligatorios).
+
+**Respuesta `200` — `ClimateOverview`**
+```json
+{
+  "location": { "lat": -5.19, "lon": -80.63, "geometry": null },
+  "today": {
+    "date": "2026-11-13", "condition": "moderate_rain",
+    "rain_probability": 0.7, "rain_mm": 12.0, "temperature_c": 31.0
+  },
+  "week": [ { "date": "2026-11-13", "condition": "moderate_rain", "rain_mm": 12.0 } ],
+  "advice": "no siembres ni abones hasta el jueves. Tu suelo ya está muy húmedo.",
+  "anomalies": [
+    {
+      "metric": "rainfall", "observed_level": 0.9, "normal_level": 0.3,
+      "comparison": { "type": "times_normal", "factor": 3.0 },
+      "observed_value": 90.0, "normal_value": 30.0, "unit": "mm",
+      "period_start": "2026-10-08", "period_end": "2026-11-06"
+    }
+  ],
+  "sources": ["open_meteo", "nasa_power"],
+  "generated_at": "2026-11-13T15:00:00"
+}
+```
+
+| Campo | Valores |
+|---|---|
+| `condition` | `sunny`, `cloudy`, `rain` (≥ 1 mm), `moderate_rain` (≥ 10 mm), `heavy_rain` (≥ 30 mm) |
+| `metric` | `rainfall`, `temperature`, `soil_moisture` |
+| `comparison.type` | `times_normal` (`factor` > 0, acotado a 0.1–10), `degrees_from_normal` (`delta` en °C), `moisture_category` (`level`: `dry`, `normal`, `wet`, `very_wet`; umbrales de ±0.1 y +0.2 sobre `GWETTOP`) |
+| `observed_level`, `normal_level` | Posición en la barra (0..1) |
+| `advice` | Texto en español que empieza en minúscula; la app le antepone "Qué hacer:" |

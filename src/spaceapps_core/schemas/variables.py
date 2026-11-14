@@ -16,6 +16,9 @@ class CanonicalVariable(StrEnum):
     NDVI = "ndvi"
     EVI = "evi"
     SOIL_MOISTURE = "soil_moisture"
+    SOIL_WETNESS = "soil_wetness"
+    PRECIPITATION_PROBABILITY = "precipitation_probability"
+    WEATHER_CODE = "weather_code"
 
 
 class VariableSpec(BaseModel):
@@ -110,5 +113,23 @@ CANONICAL_VARIABLES: dict[CanonicalVariable, VariableSpec] = {
         unit="m^3/m^3",
         description="Surface soil moisture (volumetric).",
         source_aliases={"appeears_smap": "soil_moisture"},
+    ),
+    CanonicalVariable.SOIL_WETNESS: VariableSpec(
+        name=CanonicalVariable.SOIL_WETNESS,
+        unit="fraction",
+        description="Surface soil wetness (0 = dry, 1 = saturated), MERRA-2 via POWER.",
+        source_aliases={"power": "GWETTOP"},
+    ),
+    CanonicalVariable.PRECIPITATION_PROBABILITY: VariableSpec(
+        name=CanonicalVariable.PRECIPITATION_PROBABILITY,
+        unit="%",
+        description="Daily maximum probability of precipitation.",
+        source_aliases={"open_meteo": "precipitation_probability_max"},
+    ),
+    CanonicalVariable.WEATHER_CODE: VariableSpec(
+        name=CanonicalVariable.WEATHER_CODE,
+        unit="wmo_code",
+        description="Most severe WMO weather interpretation code of the day.",
+        source_aliases={"open_meteo": "weather_code"},
     ),
 }

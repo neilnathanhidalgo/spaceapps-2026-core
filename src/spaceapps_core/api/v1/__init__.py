@@ -4,6 +4,7 @@ from .routers import (
     climate,
     features,
     jobs,
+    mobile_app,
     precipitation,
     projections,
     sentinel2,
@@ -20,5 +21,6 @@ api_router.include_router(jobs.router)
 api_router.include_router(projections.router)
 api_router.include_router(sentinel2.router)
 api_router.include_router(features.router)
+api_router.include_router(mobile_app.router)
 
 __all__ = ["api_router"]

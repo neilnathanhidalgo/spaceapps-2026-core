@@ -122,6 +122,7 @@ is stubbed with `respx`).
 | GET | `/api/v1/projections` | NEX-GDDP-CMIP6 projections at a point (SSP2-4.5 default) |
 | GET | `/api/v1/sentinel-2/scenes` | Sentinel-2 scene search (Copernicus STAC) |
 | GET | `/api/v1/features` | Daily multi-source table ready for ML; one column per variable |
+| GET | `/api/v1/app/climate-overview` | Ready-to-render summary for the mobile app's Clima screen (Open-Meteo forecast + NASA POWER anomalies) |
 
 All data endpoints accept `lat`, `lon`, `start`, `end`, and `format=json|csv|parquet`.
 

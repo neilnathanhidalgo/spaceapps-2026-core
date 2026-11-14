@@ -58,12 +58,14 @@ class OpenMeteoClient(BaseClient):
         end: date | None = None,
         forecast_days: int | None = None,
         variables: list[CanonicalVariable] | None = None,
+        timezone: str = "UTC",
         use_cache: bool = True,
     ) -> list[TimeSeries]:
         """Daily forecast.
 
         Either provide `start`/`end` (both or neither) or `forecast_days` (1-16).
         If none are provided the client defaults to 7 forecast days.
+        `timezone="auto"` aligns daily buckets with the local day of the point.
         """
 
         variables = variables or DEFAULT_FORECAST_VARIABLES
@@ -73,7 +75,7 @@ class OpenMeteoClient(BaseClient):
             "latitude": location.lat,
             "longitude": location.lon,
             "daily": ",".join(om_variables),
-            "timezone": "UTC",
+            "timezone": timezone,
             "wind_speed_unit": "ms",
         }
 

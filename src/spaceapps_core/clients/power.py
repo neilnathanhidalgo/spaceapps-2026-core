@@ -15,6 +15,14 @@ from .base import BaseClient
 
 POWER_BASE_URL = "https://power.larc.nasa.gov/api"
 POWER_MISSING = -999.0
+CLIMATOLOGY_REFERENCE_YEAR = 2000
+_CLIMATOLOGY_MONTHS = {
+    name: index
+    for index, name in enumerate(
+        ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"],
+        start=1,
+    )
+}
 
 DEFAULT_PARAMETERS: list[CanonicalVariable] = [
     CanonicalVariable.T2M_MEAN,
@@ -184,9 +192,13 @@ class PowerClient(BaseClient):
 def _parse_power_date(key: str) -> date | None:
     """POWER returns daily keys as YYYYMMDD and climatology as YYYYMM / month names.
 
-    For climatology this helper only handles the numeric YYYYMM form (months 1..12 as
-    first-of-month dates). Non-numeric keys are returned as `None`.
+    Climatology month names (JAN..DEC) become the first day of that month in
+    `CLIMATOLOGY_REFERENCE_YEAR`; only the month is meaningful. The annual
+    aggregate (ANN) is returned as `None`.
     """
+    month = _CLIMATOLOGY_MONTHS.get(key.upper())
+    if month is not None:
+        return date(CLIMATOLOGY_REFERENCE_YEAR, month, 1)
     try:
         if len(key) == 8:
             return datetime.strptime(key, "%Y%m%d").date()
