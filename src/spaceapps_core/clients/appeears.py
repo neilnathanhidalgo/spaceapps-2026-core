@@ -18,6 +18,25 @@ from .base import BaseClient
 APPEEARS_BASE_URL = "https://appeears.earthdatacloud.nasa.gov/api"
 TOKEN_CACHE_KEY = "appeears:token"
 
+TASK_STATUS_MAP = {
+    "pending": "pending",
+    "queued": "queued",
+    "processing": "running",
+    "running": "running",
+    "done": "done",
+    "complete": "done",
+    "expired": "failed",
+    "error": "failed",
+    "failed": "failed",
+}
+
+
+def normalize_task_status(upstream_status: str | None) -> str:
+    """AppEEARS status as one of pending / queued / running / done / failed."""
+    if not upstream_status:
+        return "pending"
+    return TASK_STATUS_MAP.get(upstream_status.lower(), "running")
+
 
 @dataclass
 class AppEEARSLayer:
@@ -164,6 +183,23 @@ class AppEEARSClient(BaseClient):
         if r.status_code >= 400:
             raise UpstreamError(f"AppEEARS file download failed HTTP {r.status_code}.")
         return r.content
+
+    async def point_task_series(
+        self,
+        task_id: str,
+        layers: list[AppEEARSLayer],
+        location: Location,
+    ) -> list[TimeSeries]:
+        """Download every CSV of a finished point task and parse it."""
+        files = await self.list_bundle(task_id)
+        series: list[TimeSeries] = []
+        for entry in files:
+            name = (entry.get("file_name") or "").lower()
+            if not name.endswith(".csv"):
+                continue
+            content = await self.download_file(task_id, entry["file_id"])
+            series.extend(self.parse_point_csv(content, layers, location))
+        return series
 
     @staticmethod
     def parse_point_csv(

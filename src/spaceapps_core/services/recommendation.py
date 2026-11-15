@@ -15,6 +15,10 @@ How a scenario becomes numbers:
 4. Irrigation per month: `max(0, ET0 x Kc x days - effective rainfall)`.
 5. Risk months: months of the calendar whose scenario rainfall is above the
    threshold.
+
+What the plot itself reports (SoilGrids, the farmer's own answer, MODIS NDVI,
+SMAP and IMERG) is all fail-soft: every one of them can be missing and the
+recommendation still comes out, saying so in `data_sources`.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from ..clients.power import PowerClient
 from ..core.errors import InvalidRequestError, UpstreamError
 from ..schemas.common import Location, TimeSeries
 from ..schemas.recommendation import (
+    CUSTOM_ROTATION_ID,
     SCENARIO_IDS,
     CampaignStep,
     ClimateBasis,
@@ -48,6 +53,11 @@ from ..schemas.recommendation import (
     SoilConditionLevel,
     SoilHealth,
     SoilImpactKind,
+    SoilMoistureState,
+    SoilProfile,
+    SoilTexture,
+    SoilTextureSource,
+    VegetationTrend,
 )
 from ..schemas.variables import CanonicalVariable
 from .agro_config import (
@@ -57,9 +67,26 @@ from .agro_config import (
     RestrictionConfig,
     ScenariosConfig,
     ThresholdsConfig,
+    fill_template,
     load_agro_config,
 )
+from .app_catalog import catalog_crop
 from .et0 import reference_et0
+from .local_soil import (
+    carbon_score_shift,
+    effective_rain_fraction,
+    effective_texture,
+    fetch_soil_profile,
+)
+from .observations import add_months
+from .recent_rain import (
+    RECENT_RAIN_SOURCE,
+    ObservedRain,
+    build_recent_rain,
+    cached_recent_rain,
+)
+from .soil_moisture import cached_soil_moisture
+from .vegetation import cached_vegetation_trend
 
 CLIMATE_VARIABLES = [
     CanonicalVariable.PRECIPITATION,
@@ -109,12 +136,6 @@ class RankingInput:
     irrigation_m3: float
     risk_month_count: int
     soil_impact_score: int
-
-
-def add_months(month_start: date, months: int) -> date:
-    """First day of the calendar month [months] after [month_start]."""
-    total = month_start.year * 12 + month_start.month - 1 + months
-    return date(total // 12, total % 12 + 1, 1)
 
 
 def average_monthly_weather(series: Iterable[TimeSeries], years: Sequence[int]) -> ScenarioClimate:
@@ -250,6 +271,7 @@ def scenario_result(
     *,
     area_ha: float,
     thresholds: ThresholdsConfig,
+    rain_fraction: float | None = None,
 ) -> ScenarioResult:
     """Water and climate risk of one rotation under one scenario."""
     waters = month_waters(
@@ -257,7 +279,7 @@ def scenario_result(
         climate,
         et0_by_month,
         area_ha=area_ha,
-        effective_rain_fraction=thresholds.effective_rain_fraction,
+        effective_rain_fraction=rain_fraction or thresholds.effective_rain_fraction,
     )
     risk_months = calendar_risk_months(windows, risky)
     irrigation_mm = sum(water.irrigation_mm for water in waters)
@@ -280,10 +302,24 @@ def current_soil_score(
     last_crop: CropConfig,
     consecutive_campaigns: int,
     thresholds: ThresholdsConfig,
+    *,
+    soil: SoilProfile | None = None,
+    vegetation: VegetationTrend | None = None,
 ) -> int:
-    """Soil score today: the last crop's impact once per campaign that counts."""
+    """Soil score today.
+
+    Starts from the baseline, moves it with the organic carbon SoilGrids
+    reports, takes away points if the plot's greenness is falling (MODIS
+    NDVI) and applies the last crop's impact once per campaign that counts.
+    """
     campaigns = max(consecutive_campaigns - thresholds.soil_campaigns_before_penalty, 0)
-    score = thresholds.soil_baseline_score + last_crop.soil_score * campaigns
+    declining = vegetation is not None and vegetation.direction == "down"
+    score = (
+        thresholds.soil_baseline_score
+        + carbon_score_shift(soil, thresholds)
+        - (thresholds.soil_vegetation_decline_penalty if declining else 0)
+        + last_crop.soil_score * campaigns
+    )
     return min(max(score, 0), len(SOIL_CONDITIONS) - 1)
 
 
@@ -367,12 +403,24 @@ def build_recommendation(
     request: RecommendationRequest,
     config: AgroConfig,
     climates: dict[ScenarioId, ScenarioClimate],
+    *,
+    soil: SoilProfile | None = None,
+    vegetation: VegetationTrend | None = None,
+    soil_moisture: SoilMoistureState | None = None,
+    recent_rain: ObservedRain | None = None,
 ) -> RecommendationResponse:
-    """Build the whole response. Pure: no network, no FastAPI."""
+    """Build the whole response. Pure: no network, no FastAPI.
+
+    Every observation of the plot is optional: without them the engine falls
+    back to the global rain fraction and to the baseline soil score.
+    """
 
     priority, restrictions, last_crop = resolve_choices(config, request)
+    custom_crops = _custom_rotation_or_400(config, request.custom_rotation)
     thresholds = config.thresholds
     location = Location(lat=request.lat, lon=request.lon)
+    texture, texture_source = effective_texture(soil, request.reported_soil_texture)
+    rain_fraction = effective_rain_fraction(texture, thresholds)
 
     et0 = {scenario: monthly_et0(climate, request.lat) for scenario, climate in climates.items()}
     risky = {
@@ -389,15 +437,28 @@ def build_recommendation(
                 risky[scenario],
                 area_ha=request.area_ha,
                 thresholds=thresholds,
+                rain_fraction=rain_fraction,
             )
             for scenario in SCENARIO_IDS
         }
 
-    soil_now = current_soil_score(last_crop, request.consecutive_campaigns, thresholds)
+    soil_now = current_soil_score(
+        last_crop,
+        request.consecutive_campaigns,
+        thresholds,
+        soil=soil,
+        vegetation=vegetation,
+    )
+
+    rotations: list[tuple[str, list[CropConfig]]] = [
+        (rotation.id, [config.crop(crop_id) for crop_id in rotation.crop_ids])
+        for rotation in config.rotations
+    ]
+    if custom_crops:
+        rotations.append((CUSTOM_ROTATION_ID, custom_crops))
 
     options: list[RotationOptionOut] = []
-    for rotation in config.rotations:
-        crops = [config.crop(crop_id) for crop_id in rotation.crop_ids]
+    for rotation_id, crops in rotations:
         windows = crop_windows(request.planting_date, crops)
         impact, impact_score = soil_impact_of(crops)
         plan = long_term_plan(
@@ -406,8 +467,8 @@ def build_recommendation(
         by_scenario = results(windows)
         options.append(
             RotationOptionOut(
-                id=rotation.id,
-                crop_ids=rotation.crop_ids,
+                id=rotation_id,
+                crop_ids=[crop.id for crop in crops],
                 cycle_months=sum(window.month_count for window in windows),
                 soil_impact=impact,
                 soil_impact_score=impact_score,
@@ -445,6 +506,7 @@ def build_recommendation(
         planting_date=request.planting_date,
         priority_id=priority.id,
         restriction_ids=[restriction.id for restriction in restrictions],
+        crops=[catalog_crop(crop, thresholds) for crop in config.crops],
         options=options,
         ranking={
             catalog_priority.id: {
@@ -458,14 +520,26 @@ def build_recommendation(
         current_practice=current_practice,
         soil_health=SoilHealth(
             condition=soil_condition(soil_now),
-            findings=[
-                _fill(
-                    template,
-                    campaigns=request.consecutive_campaigns,
-                    crop=last_crop.name.lower(),
-                )
-                for template in config.content.soil_findings
-            ],
+            findings=_soil_findings(
+                config,
+                request,
+                last_crop,
+                soil,
+                vegetation,
+                soil_moisture,
+                texture,
+                texture_source,
+            ),
+            texture=texture,
+            texture_source=texture_source,
+            profile=soil,
+            vegetation_trend=vegetation,
+            soil_moisture=soil_moisture,
+        ),
+        recent_rain=(
+            None
+            if recent_rain is None
+            else build_recent_rain(recent_rain, _monthly_rain(climates), config.content)
         ),
         risk_months={
             scenario: _horizon_risk_months(request.planting_date, horizon, risky[scenario])
@@ -480,7 +554,7 @@ def build_recommendation(
                 scenario: config.scenarios.years_for(scenario) for scenario in SCENARIO_IDS
             },
             et0_method="hargreaves",
-            effective_rain_fraction=thresholds.effective_rain_fraction,
+            effective_rain_fraction=rain_fraction,
             risk_month_rain_mm=thresholds.risk_month_rain_mm,
             monthly_climate={
                 scenario: [
@@ -497,19 +571,47 @@ def build_recommendation(
                 for scenario in SCENARIO_IDS
             },
         ),
+        data_sources=_data_sources(soil, vegetation, soil_moisture, recent_rain, texture_source),
         example_parameters=config.example_parameters,
         generated_at=datetime.utcnow(),
     )
 
 
 async def recommend(request: RecommendationRequest) -> RecommendationResponse:
-    """Fetch the scenario climate from NASA POWER and build the response."""
+    """Fetch every upstream in parallel and build the response.
+
+    Only NASA POWER is required: SoilGrids and what the plot reports are
+    fail-soft, so a farmer on a masked pixel still gets a recommendation.
+    The NDVI trend, the SMAP moisture and the IMERG rain come from the cache,
+    never from a live call: all three take minutes.
+    """
     config = load_agro_config()
     resolve_choices(config, request)
-    climates = await fetch_scenario_climates(
-        Location(lat=request.lat, lon=request.lon), config.scenarios
+    _custom_rotation_or_400(config, request.custom_rotation)
+    location = Location(lat=request.lat, lon=request.lon)
+
+    climates, soil = await asyncio.gather(
+        fetch_scenario_climates(location, config.scenarios),
+        fetch_soil_profile(location, config.thresholds),
     )
-    return build_recommendation(request, config, climates)
+    thresholds = config.thresholds
+    # Lo que tarda minutos no se espera: se usa lo que ya está en caché y el
+    # router lo refresca después de responder.
+    vegetation = cached_vegetation_trend(
+        location,
+        years=thresholds.vegetation_trend_years,
+        flat_tolerance=thresholds.vegetation_flat_tolerance,
+        season=thresholds.vegetation_season,
+    )
+    return build_recommendation(
+        request,
+        config,
+        climates,
+        soil=soil,
+        vegetation=vegetation,
+        soil_moisture=cached_soil_moisture(location, thresholds),
+        recent_rain=cached_recent_rain(location, thresholds),
+    )
 
 
 async def fetch_scenario_climates(
@@ -535,6 +637,118 @@ async def fetch_scenario_climates(
         scenario: average_monthly_weather(series, scenarios.years_for(scenario))
         for scenario in SCENARIO_IDS
     }
+
+
+def _soil_findings(
+    config: AgroConfig,
+    request: RecommendationRequest,
+    last_crop: CropConfig,
+    soil: SoilProfile | None,
+    vegetation: VegetationTrend | None,
+    soil_moisture: SoilMoistureState | None,
+    texture: SoilTexture | None,
+    texture_source: SoilTextureSource | None,
+) -> list[str]:
+    """What explains the soil state, in the farmer's words."""
+    content = config.content
+    findings = [
+        fill_template(
+            template,
+            campaigns=request.consecutive_campaigns,
+            crop=last_crop.name.lower(),
+        )
+        for template in content.soil_findings
+    ]
+    if texture is not None and texture_source == "farmer":
+        reported = content.soil_reported_texture_findings.get(texture)
+        if reported:
+            findings.append(reported)
+    if soil is not None:
+        values = {
+            "sand": round(soil.sand_percent),
+            "clay": round(soil.clay_percent),
+            "carbon": soil.organic_carbon_g_kg,
+        }
+        if texture_source == "soilgrids":
+            measured = content.soil_texture_findings.get(soil.texture)
+            if measured:
+                findings.append(fill_template(measured, **values))
+        carbon = content.soil_carbon_findings.get(_carbon_band(soil, config.thresholds))
+        if carbon:
+            findings.append(fill_template(carbon, **values))
+    if vegetation is not None:
+        trend = content.vegetation_findings.get(vegetation.direction)
+        if trend:
+            findings.append(
+                fill_template(
+                    trend,
+                    percent=f"{abs(round(vegetation.change_ratio * 100))}%",
+                    start_year=vegetation.start_year,
+                    end_year=vegetation.end_year,
+                )
+            )
+    if soil_moisture is not None:
+        moisture = content.soil_moisture_findings.get(soil_moisture.band)
+        if moisture:
+            findings.append(
+                fill_template(
+                    moisture,
+                    moisture=soil_moisture.mean_m3_m3,
+                    days=soil_moisture.observed_days,
+                )
+            )
+    return findings
+
+
+def _carbon_band(soil: SoilProfile, thresholds: ThresholdsConfig) -> str:
+    shift = carbon_score_shift(soil, thresholds)
+    return {-1: "low", 0: "normal", 1: "high"}[shift]
+
+
+def _data_sources(
+    soil: SoilProfile | None,
+    vegetation: VegetationTrend | None,
+    soil_moisture: SoilMoistureState | None,
+    recent_rain: ObservedRain | None,
+    texture_source: SoilTextureSource | None,
+) -> list[str]:
+    sources = ["nasa_power"]
+    if soil is not None:
+        sources.append(soil.source)
+    if vegetation is not None:
+        sources.append(vegetation.source)
+    if soil_moisture is not None:
+        sources.append(soil_moisture.source)
+    if recent_rain is not None:
+        sources.append(RECENT_RAIN_SOURCE)
+    if texture_source == "farmer":
+        sources.append("farmer")
+    return sources
+
+
+def _monthly_rain(
+    climates: dict[ScenarioId, ScenarioClimate],
+) -> dict[ScenarioId, dict[int, float]]:
+    return {
+        scenario: {month: weather.rain_mm for month, weather in climate.items()}
+        for scenario, climate in climates.items()
+    }
+
+
+def _custom_rotation_or_400(
+    config: AgroConfig,
+    crop_ids: Sequence[str] | None,
+) -> list[CropConfig]:
+    """The rotation the farmer put together, validated against the catalog."""
+    if not crop_ids:
+        return []
+    limit = config.thresholds.max_custom_rotation_crops
+    if len(crop_ids) > limit:
+        raise InvalidRequestError(
+            f"custom_rotation accepts at most {limit} crops.",
+            details={"max_custom_rotation_crops": limit},
+        )
+    return [_crop_or_400(config, crop_id) for crop_id in crop_ids]
 
 
 def _ranking_inputs(
@@ -630,15 +844,6 @@ def _crop_or_400(config: AgroConfig, crop_id: str) -> CropConfig:
             f"Unknown crop id: {crop_id!r}.",
             details={"known": [crop.id for crop in config.crops]},
         ) from error
-
-
-def _fill(template: str, **values: object) -> str:
-    # The templates come from an editable file: a typo in a placeholder must
-    # not break the response.
-    try:
-        return template.format(**values)
-    except (KeyError, IndexError, ValueError):
-        return template
 
 
 def _mid_month_day_of_year(month: int) -> int:

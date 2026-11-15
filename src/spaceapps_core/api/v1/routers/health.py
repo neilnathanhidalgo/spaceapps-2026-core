@@ -9,6 +9,8 @@ from fastapi import APIRouter
 
 from ....clients.gaez import GAEZ_IMAGE_SERVER_URL
 from ....clients.open_meteo import OPEN_METEO_ARCHIVE_URL
+from ....clients.ornl_modis import NDVI_BAND, NDVI_PRODUCT, ORNL_MODIS_BASE_URL
+from ....clients.soilgrids import SOILGRIDS_BASE_URL
 from ....core.config import get_settings
 from ....schemas.common import SourceHealth, SourcesHealth
 
@@ -134,6 +136,32 @@ async def _probe_gaez() -> SourceHealth:
     return await _timed_get("fao_gaez", GAEZ_IMAGE_SERVER_URL, params={"f": "json"}, timeout=15.0)
 
 
+async def _probe_soilgrids() -> SourceHealth:
+    return await _timed_get(
+        "soilgrids",
+        f"{SOILGRIDS_BASE_URL}/properties/query",
+        params={"lon": -80.60, "lat": -5.25, "property": "soc", "depth": "0-5cm", "value": "mean"},
+        timeout=20.0,
+    )
+
+
+async def _probe_ornl_modis() -> SourceHealth:
+    return await _timed_get(
+        "ornl_modis",
+        f"{ORNL_MODIS_BASE_URL}/{NDVI_PRODUCT}/subset",
+        params={
+            "latitude": -5.19,
+            "longitude": -80.63,
+            "startDate": "A2023001",
+            "endDate": "A2023017",
+            "band": NDVI_BAND,
+            "kmAboveBelow": 0,
+            "kmLeftRight": 0,
+        },
+        timeout=20.0,
+    )
+
+
 SOURCE_PROBES: list[Callable[[], Awaitable[SourceHealth]]] = [
     _probe_power,
     _probe_open_meteo,
@@ -142,6 +170,8 @@ SOURCE_PROBES: list[Callable[[], Awaitable[SourceHealth]]] = [
     _probe_earthdata,
     _probe_nex_gddp,
     _probe_gaez,
+    _probe_soilgrids,
+    _probe_ornl_modis,
 ]
 
 

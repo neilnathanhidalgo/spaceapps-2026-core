@@ -65,6 +65,8 @@ class TimeSeries:
 | **Earthdata / IMERG** (`clients/earthdata.py`) | GPM IMERG daily precipitation + generic search by `short_name` | 0.1° | Daily (final run has ~month latency) | Earthdata login |
 | **NEX-GDDP-CMIP6** (`clients/nex_gddp.py`) | Daily downscaled climate projections (SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5) | 0.25° | N/A (static CMIP6) | Anonymous S3 |
 | **FAO GAEZ v4** (`clients/gaez.py`) | Rainfed crop suitability index (0-1) per crop, 1981-2010 baseline | ~9 km | Static | None |
+| **SoilGrids v2.0** (`clients/soilgrids.py`) | Soil properties at a point: sand, clay, organic carbon, pH… | 250 m | Static | None |
+| **ORNL DAAC MODIS** (`clients/ornl_modis.py`) | Synchronous MODIS point subsets; used for the MOD13Q1 NDVI history | 250 m | Per 16-day composite | None |
 
 Sources from the Space Apps resource list that only cover the United States
 (SSURGO/STATSGO2, Web Soil Survey, CDL, PRISM, NAIP, NLDAS, CoCoRaHS, NWIS,
@@ -118,7 +120,7 @@ is stubbed with `respx`).
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Liveness check |
-| GET | `/health/sources` | Probes every upstream in parallel; returns `ok` / `error` / `not_configured` with per-source latency |
+| GET | `/health/sources` | Probes every upstream in parallel (POWER, Open-Meteo, ERA5, AppEEARS, Earthdata, NEX-GDDP, GAEZ, SoilGrids, ORNL MODIS); returns `ok` / `error` / `not_configured` with per-source latency |
 | GET | `/api/v1/climate/history` | NASA POWER daily agroclimatology at a point |
 | GET | `/api/v1/climate/forecast` | Open-Meteo 1-16 day daily forecast |
 | GET | `/api/v1/climate/reanalysis` | ERA5 daily reanalysis at a point |
@@ -190,13 +192,41 @@ Also usable in CI gates to notice when an upstream is down.
 
 `POST /api/v1/app/recommendation` answers "what should I plant?" with the
 farmer's own inputs (location, hectares, planting date, last crop, campaigns in
-a row, priority, restrictions) and **NASA POWER only** — no credentials. It
-returns the three climate scenarios at once (`heavy_rains`, `normal`, `dry`) so
-the app can switch between them offline, each with irrigation water (m³),
-climate-risk months, the planting calendar and the soil outlook. The ranking
-comes for every priority of the catalog as well, so changing priority in the app
-needs no new request. `GET /api/v1/app/catalog` serves the crops, priorities and
-restrictions. Both are documented in [docs/API.md](docs/API.md).
+a row, priority, restrictions, the texture they recognize in their own soil and
+optionally a rotation they chained themselves) and five observations of that
+point: **NASA POWER** for the climate of each scenario, **SoilGrids** for the
+soil under the plot, the **MODIS NDVI** history for how the plot's greenness is
+moving, **SMAP** for how wet the topsoil has been and **GPM IMERG** for the
+rain the current campaign actually got.
+
+| Input of the challenge | Where it comes from |
+|---|---|
+| NASA Earth observations | NASA POWER (climate of each scenario), MODIS NDVI (greenness trend), SMAP (topsoil moisture), GPM IMERG (measured rain) |
+| Local soil | SoilGrids at the point, plus the texture the farmer picks in the app ("does your soil look like this one?"), which wins over SoilGrids |
+| Crops | `crops` in `agro_config.json`: water asked (`water_index` / `water_need`), cycle length and whether it fixes nitrogen |
+| Priorities | `priorities` in `agro_config.json`; the response ranks every one of them, so the app re-sorts without asking again |
+
+**Only NASA POWER and the parameter file are required.** SoilGrids, MODIS,
+SMAP and IMERG are fail-soft, and the last three take minutes to answer, so
+the recommendation reads whatever is already cached for the point and the
+endpoint refreshes it in the background: the first farmer on a new plot gets
+the recommendation without them, and the next one gets them. SMAP and IMERG
+also need Earthdata credentials; with none configured they are simply absent
+and `data_sources` says so.
+
+SMAP measures the water of the first 5 cm, not what the roots have stored, so
+it is **reported, not used in the irrigation maths**. Turning it into a water
+balance is a decision for the agronomy team.
+
+It returns the three climate scenarios at once (`heavy_rains`, `normal`, `dry`)
+so the app can switch between them offline, each with irrigation water (m³),
+climate-risk months, the planting calendar and the soil outlook over the next
+two years. The ranking comes for every priority of the catalog as well, so
+changing priority in the app needs no new request. Only POWER is required: if
+SoilGrids has no data for the pixel or the NDVI service is down, the response
+still succeeds and says so in `data_sources`. `GET /api/v1/app/catalog` serves
+the crops, priorities and restrictions. Both are documented in
+[docs/API.md](docs/API.md).
 
 Every agronomic value lives in one editable file,
 `src/spaceapps_core/data/agro_config.json` (override the path with
@@ -204,13 +234,14 @@ Every agronomic value lives in one editable file,
 
 | Block | What it holds |
 |---|---|
-| `crops` | Id, display name, `kc_by_month` (one crop coefficient per month of the cycle; its length is the cycle duration), `soil_impact` and the factsheet texts |
+| `crops` | Id, display name, `kc_by_month` (one crop coefficient per month of the cycle; its length is the cycle duration), `soil_impact`, `fixes_nitrogen` and the factsheet texts |
 | `rotations` | Id and the ordered list of crop ids |
+| `soil_textures` | The answers to "does your soil look like this one?": id (`sandy` / `loamy` / `clayey`), display name and how the farmer recognizes it in their hand |
 | `scenarios` | Reference years whose observed POWER climate stands for each scenario |
-| `thresholds` | Risk-month rainfall, effective-rain fraction, the water-per-hectare limit of "Tendré poca agua", risk levels and the soil rule |
+| `thresholds` | Risk-month rainfall, effective-rain fraction (global and per soil texture), the water-per-hectare limit of "Tendré poca agua", risk levels, the soil rule, the organic-carbon bands, the NDVI-trend window, the water-need bands of a crop, the SMAP moisture bands, how many complete months the SMAP/IMERG window covers and how many crops a farmer can chain |
 | `priorities` | Id, display name, short phrase and the ranking `criterion` |
 | `restrictions` | Id, display name and what they rule out (`excludes_crop_ids`, `excludes_high_water_use`) |
-| `defaults`, `content` | Fallback last crop and the Spanish texts shown by the app |
+| `defaults`, `content` | Fallback last crop and the Spanish texts shown by the app (including one finding per soil texture, organic-carbon band and NDVI trend) |
 
 > **The values shipped are examples.** Every block is flagged
 > `"_example": true` and the API answers `"example_parameters": true` while any
@@ -250,7 +281,14 @@ print(response.ranking["save-water"]["normal"])
 ```
 
 `reference_et0` (Hargreaves-Samani, `services/et0.py`) is isolated so a better
-method can replace it without touching the engine.
+method can replace it without touching the engine. `services/local_soil.py`,
+`services/vegetation.py`, `services/soil_moisture.py` and
+`services/recent_rain.py` hold the SoilGrids, NDVI, SMAP and IMERG logic, also
+as pure functions plus one fail-soft fetch each; `build_recommendation` takes
+`soil=`, `vegetation=`, `soil_moisture=` and `recent_rain=` so a notebook can
+try other values. `services/observations.py` decides the window the satellite
+observations cover: complete calendar months ending with last month, so it only
+moves once a month and every farmer on the point shares the same cache entry.
 
 ## Caching
 

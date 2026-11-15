@@ -80,7 +80,5 @@ async def submit_job(
         end=end,
         layers=layers,
     )
-    register_job(
-        JobRegistryEntry(task_id=task_id, source=source, location=location, layers=layers)
-    )
+    register_job(JobRegistryEntry(task_id=task_id, source=source, location=location, layers=layers))
     return {"job_id": task_id, "source": source, "status": "queued"}

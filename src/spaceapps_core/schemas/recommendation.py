@@ -13,9 +13,17 @@ ScenarioId = Literal["heavy_rains", "normal", "dry"]
 SoilImpactKind = Literal["degrades", "neutral", "improves", "improves_a_lot"]
 SoilConditionLevel = Literal["very_tired", "tired", "regular", "good"]
 ClimateRiskLevel = Literal["low", "medium", "high"]
+SoilTexture = Literal["sandy", "loamy", "clayey"]
+VegetationDirection = Literal["down", "flat", "up"]
 RankingCriterion = Literal["least_water", "most_soil_improvement", "least_climate_risk"]
+SoilTextureSource = Literal["farmer", "soilgrids"]
+SoilMoistureBand = Literal["dry", "normal", "wet"]
+CropWaterNeed = Literal["low", "medium", "high"]
 
 SCENARIO_IDS: tuple[ScenarioId, ...] = ("heavy_rains", "normal", "dry")
+
+CUSTOM_ROTATION_ID = "custom"
+"""Id of the option the farmer builds; reserved, no config rotation may use it."""
 
 
 class _Strict(BaseModel):
@@ -44,6 +52,20 @@ class RecommendationRequest(_Strict):
         description="Chosen priority. Null uses the first priority of the catalog.",
     )
     restriction_ids: list[str] = Field(default_factory=list)
+    custom_rotation: list[str] | None = Field(
+        default=None,
+        description=(
+            "Crop ids the farmer put together, in planting order. Comes back as an "
+            f'extra option with id "{CUSTOM_ROTATION_ID}".'
+        ),
+    )
+    reported_soil_texture: SoilTexture | None = Field(
+        default=None,
+        description=(
+            "Texture the farmer recognized in their own plot. Wins over SoilGrids: "
+            "they know the field, SoilGrids averages 250 m."
+        ),
+    )
 
 
 class CatalogCrop(_Strict):
@@ -51,6 +73,16 @@ class CatalogCrop(_Strict):
     name: str
     cycle_months: int = Field(..., description="Length of `kc_by_month`.")
     soil_impact: SoilImpactKind
+    water_need: CropWaterNeed = Field(
+        ..., description="Band of `water_index` against the catalog thresholds."
+    )
+    water_index: float = Field(
+        ...,
+        description="Sum of the cycle's Kc: how many months of full ET0 the crop asks for.",
+    )
+    fixes_nitrogen: bool = Field(
+        ..., description="Whether the crop leaves nitrogen behind for the next one."
+    )
 
 
 class CatalogPriority(_Strict):
@@ -64,6 +96,14 @@ class CatalogRestriction(_Strict):
     name: str
 
 
+class CatalogSoilTexture(_Strict):
+    """One answer to "does your soil look like this one?"."""
+
+    id: SoilTexture
+    name: str
+    description: str = Field(..., description="How the farmer recognizes it in their hand.")
+
+
 class AppCatalog(_Strict):
     """Crops, priorities and restrictions the app offers to the farmer."""
 
@@ -72,6 +112,13 @@ class AppCatalog(_Strict):
         ..., description="In display order; the first one is the suggested default."
     )
     restrictions: list[CatalogRestriction]
+    soil_textures: list[CatalogSoilTexture] = Field(
+        ..., description="Answers to `soil_texture_question`; empty hides the question."
+    )
+    soil_texture_question: str
+    max_rotation_crops: int = Field(
+        ..., description="How many crops the farmer can chain in `custom_rotation`."
+    )
     example_parameters: bool = Field(
         ..., description="True while any block of `agro_config.json` is marked `_example`."
     )
@@ -161,9 +208,58 @@ class CurrentPracticeOut(_Strict):
     scenarios: dict[ScenarioId, ScenarioResult]
 
 
+class SoilProfile(_Strict):
+    """What SoilGrids says about the soil under the plot."""
+
+    sand_percent: float
+    clay_percent: float
+    organic_carbon_g_kg: float
+    texture: SoilTexture
+    depth: str = Field(..., description="Depth interval of the sample, e.g. 0-5cm.")
+    source: str = "soilgrids"
+
+
+class VegetationTrend(_Strict):
+    """How the plot's greenness (NDVI) moved between two years."""
+
+    start_year: int
+    end_year: int
+    start_ndvi: float
+    end_ndvi: float
+    change_ratio: float = Field(..., description="Relative change; -0.18 means greenness fell 18%.")
+    direction: VegetationDirection
+    source: str = "ornl_modis"
+
+
+class SoilMoistureState(_Strict):
+    """How wet the top of the soil has been, measured by SMAP."""
+
+    mean_m3_m3: float = Field(..., description="Mean volumetric water content of the window.")
+    band: SoilMoistureBand
+    start: date
+    end: date
+    observed_days: int
+    source: str = "smap"
+
+
 class SoilHealth(_Strict):
     condition: SoilConditionLevel
     findings: list[str]
+    texture: SoilTexture | None = Field(
+        default=None, description="Texture the water balance used. Null when nobody knows it."
+    )
+    texture_source: SoilTextureSource | None = Field(
+        default=None, description="Who said so. Null when `texture` is null."
+    )
+    profile: SoilProfile | None = Field(
+        default=None, description="Null when SoilGrids has no data for the point."
+    )
+    vegetation_trend: VegetationTrend | None = Field(
+        default=None, description="Null when there is not enough NDVI history."
+    )
+    soil_moisture: SoilMoistureState | None = Field(
+        default=None, description="Null until the SMAP window of the point is warm."
+    )
 
 
 class MonthClimate(_Strict):
@@ -175,6 +271,28 @@ class MonthClimate(_Strict):
     t2m_min: float
     et0_mm_day: float
     is_risk_month: bool
+
+
+class RecentRain(_Strict):
+    """Rain already measured over the plot, and the scenario it looks like.
+
+    GPM IMERG sees 0.1 degrees against POWER's 0.5, so it is the finer look at
+    what the current campaign actually got.
+    """
+
+    start: date
+    end: date
+    observed_days: int
+    total_mm: float
+    scenario_totals: dict[ScenarioId, float] = Field(
+        ...,
+        description="What the same days of the year add up to in each scenario's reference years.",
+    )
+    closest_scenario: ScenarioId = Field(
+        ..., description="Scenario whose expected total is nearest to `total_mm`."
+    )
+    finding: str = Field(..., description="The same thing in the farmer's words.")
+    source: str = "gpm_imerg"
 
 
 class ClimateBasis(_Strict):
@@ -195,6 +313,10 @@ class RecommendationResponse(_Strict):
     planting_date: date
     priority_id: str
     restriction_ids: list[str]
+    crops: list[CatalogCrop] = Field(
+        ...,
+        description="Crops referenced by `crop_ids`, so the response needs no catalog call.",
+    )
     options: list[RotationOptionOut]
     ranking: dict[str, dict[ScenarioId, list[str]]] = Field(
         ...,
@@ -206,9 +328,13 @@ class RecommendationResponse(_Strict):
     )
     current_practice: CurrentPracticeOut
     soil_health: SoilHealth
+    recent_rain: RecentRain | None = Field(
+        default=None, description="Null until the IMERG window of the point is warm."
+    )
     risk_months: dict[ScenarioId, list[date]]
     scenario_notes: dict[ScenarioId, str]
     irrigation_source: str
     climate_basis: ClimateBasis
+    data_sources: list[str] = Field(..., description="Upstreams that actually fed this response.")
     example_parameters: bool
     generated_at: datetime

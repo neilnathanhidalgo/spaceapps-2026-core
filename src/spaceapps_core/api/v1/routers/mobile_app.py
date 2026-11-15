@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, BackgroundTasks, Query
 
 from ....schemas.climate_overview import ClimateOverview
 from ....schemas.common import Location
@@ -11,7 +11,10 @@ from ....schemas.recommendation import (
 )
 from ....services.app_catalog import build_catalog
 from ....services.climate_overview import build_climate_overview
+from ....services.recent_rain import warm_recent_rain
 from ....services.recommendation import recommend
+from ....services.soil_moisture import warm_soil_moisture
+from ....services.vegetation import warm_vegetation_trend
 
 router = APIRouter(prefix="/app", tags=["app"])
 
@@ -42,5 +45,17 @@ async def catalog() -> AppCatalog:
     summary="Rotation recommendation for the three scenarios, from NASA POWER",
     response_model=RecommendationResponse,
 )
-async def recommendation(request: RecommendationRequest) -> RecommendationResponse:
-    return await recommend(request)
+async def recommendation(
+    request: RecommendationRequest,
+    background: BackgroundTasks,
+) -> RecommendationResponse:
+    response = await recommend(request)
+    # Lo que tarda minutos (NDVI, SMAP, IMERG) no se espera: se deja pedido
+    # para la próxima vez que alguien pregunte por este punto.
+    if response.soil_health.vegetation_trend is None:
+        background.add_task(warm_vegetation_trend, response.location)
+    if response.soil_health.soil_moisture is None:
+        background.add_task(warm_soil_moisture, response.location)
+    if response.recent_rain is None:
+        background.add_task(warm_recent_rain, response.location)
+    return response

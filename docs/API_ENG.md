@@ -566,7 +566,7 @@ No credentials needed.
 ---
 
 ### `GET /api/v1/app/catalog`
-Crops, priorities and restrictions the farmer chooses from. Served straight
+Crops, priorities, restrictions and soil textures the farmer chooses from. Served straight
 from the agronomic parameter file (`src/spaceapps_core/data/agro_config.json`,
 override with `AGRO_CONFIG_PATH`). No credentials needed.
 
@@ -575,11 +575,21 @@ override with `AGRO_CONFIG_PATH`). No credentials needed.
 **Response `200` — `AppCatalog`**
 ```json
 {
-  "crops": [{ "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades" }],
+  "crops": [
+    {
+      "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades",
+      "water_need": "high", "water_index": 5.3, "fixes_nitrogen": false
+    }
+  ],
   "priorities": [
     { "id": "lower-climate-risk", "name": "Menos riesgo de clima", "phrase": "tener menos riesgo de clima" }
   ],
   "restrictions": [{ "id": "low-water", "name": "Tendré poca agua" }],
+  "soil_textures": [
+    { "id": "sandy", "name": "Arenosa", "description": "Se desarma en la mano y se siente como arena. El agua se va rápido." }
+  ],
+  "soil_texture_question": "¿A cuál de estas se parece tu tierra?",
+  "max_rotation_crops": 4,
   "example_parameters": true
 }
 ```
@@ -589,6 +599,11 @@ override with `AGRO_CONFIG_PATH`). No credentials needed.
 | `priorities` | Display order; **the first one is the suggested default** |
 | `cycle_months` | Crop cycle length in months (= length of `kc_by_month`) |
 | `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
+| `water_index` | Water the cycle asks for, in months of full ET0 (the sum of `kc_by_month`). Climate- and plot-independent: it compares crops against each other, it does not estimate m³ |
+| `water_need` | `low` / `medium` / `high`: band of `water_index` against `crop_water_need_medium_index` and `crop_water_need_high_index` |
+| `fixes_nitrogen` | Whether the crop leaves nitrogen for the next one. Informational: `soil_impact` already counts the benefit and it must **not** be counted twice |
+| `soil_textures` | Answers to `soil_texture_question` ("does your soil look like this one?"). The answer goes back in `reported_soil_texture`; an empty list hides the question |
+| `max_rotation_crops` | How many crops the farmer can chain in `custom_rotation` |
 | `example_parameters` | True while any block of the JSON is still flagged `"_example": true` |
 
 ---
@@ -596,8 +611,10 @@ override with `AGRO_CONFIG_PATH`). No credentials needed.
 ### `POST /api/v1/app/recommendation`
 Rotation recommendation for the app's **Qué sembrar**, "¿Cuándo siembro?" and
 "Rotación" screens. Computes **all three scenarios at once** so the app can
-switch scenario without another request. Uses **NASA POWER only** (no
-credentials) plus the agronomic parameter file.
+switch scenario without another request. **NASA POWER** (no credentials) and
+the agronomic parameter file are the only requirements; everything else the
+plot reports (SoilGrids, MODIS, SMAP, GPM IMERG and the texture the farmer
+recognized) adds up when it is there.
 
 **How it is computed**
 
@@ -620,21 +637,71 @@ credentials) plus the agronomic parameter file.
    `risk_month_rain_mm`. An option's risk is how many months of **its** own
    calendar land on those, levelled `low` / `medium` / `high` with
    `climate_risk_medium_months` and `climate_risk_high_months`.
-6. **Soil:** today's condition comes from the last crop and how many campaigns
-   in a row it has been grown
-   (`soil_baseline_score + crop impact x (campaigns - soil_campaigns_before_penalty)`,
-   clamped to the `very_tired` → `good` scale). The "in two years" condition
-   applies each crop's `soil_impact`, repeating the rotation until
-   `soil_horizon_months` is covered.
-7. **Restrictions:** every option carries `excluded_by`; **no option is
+6. **Local soil (SoilGrids + the farmer):** sand, clay and organic carbon at
+   the point (0-5 cm). The texture (`sandy` / `loamy` / `clayey`) replaces the
+   effective rain fraction with the one in
+   `effective_rain_fraction_by_texture`, so a sandy soil needs more
+   irrigation. **The texture that wins is the one the farmer reported**
+   (`reported_soil_texture`): they have the soil in their hand and SoilGrids
+   averages 250 m. `soil_health.texture_source` says who set it (`farmer` /
+   `soilgrids`) and `soil_health.profile` still carries what SoilGrids
+   measured. Organic carbon shifts the soil's starting score by ±1 around
+   `soil_organic_carbon_low_g_kg` / `soil_organic_carbon_high_g_kg`.
+7. **Greenness (MODIS NDVI, ORNL DAAC):** yearly mean NDVI over the last
+   `vegetation_trend_years` years, first year against last. A fall bigger than
+   `vegetation_flat_tolerance` costs `soil_vegetation_decline_penalty` points
+   of soil score.
+8. **Measured moisture (SMAP):** mean volumetric water content of the first
+   5 cm over the observation window, banded `dry` / `normal` / `wet` with
+   `soil_moisture_dry_m3_m3` / `soil_moisture_wet_m3_m3`. It is **reported,
+   not computed with**: the first 5 cm are not the water the roots hold, and
+   turning that into a water balance is a call for the agronomy team.
+9. **Measured rain (GPM IMERG):** rain accumulated over the plot during the
+   observation window (0.1°, finer than POWER's 0.5°) against what the same
+   days add up to in each scenario's reference years (the month prorated by
+   the measured days). `recent_rain.closest_scenario` is the scenario the year
+   looks like: the measured answer to the question behind the three scenarios.
+10. **Soil:** today's condition comes from that starting score, the last crop
+   and how many campaigns in a row it has been grown
+   (`x (campaigns - soil_campaigns_before_penalty)`), clamped to the
+   `very_tired` → `good` scale. The "in two years" condition applies each
+   crop's `soil_impact`, repeating the rotation until `soil_horizon_months` is
+   covered.
+11. **Restrictions:** every option carries `excluded_by`; **no option is
    dropped** from the response (the app hides them). A restriction excludes by
    crop (`excludes_crop_ids`) or by water use (`excludes_high_water_use`, when
    water per hectare is above `low_water_m3_per_ha` **in any scenario**).
-8. **Ranking per priority and scenario** — computed for **every** priority of
+12. **Ranking per priority and scenario** — computed for **every** priority of
    the catalog, not only the chosen one: `least_water` (less
    irrigation), `most_soil_improvement` (best soil gain, ties broken by fewer
    risk months) and `least_climate_risk` (fewer risk months, ties broken by
-   less water). Remaining ties keep the catalog order.
+    less water). Remaining ties keep the catalog order.
+
+**Observation window (SMAP and IMERG):** the last
+`observation_window_months` **complete** calendar months (with
+`observation_window_months: 2`, on 15 November 2026 that is 1 September to
+31 October). It deliberately does not move inside the month: everyone asking
+about the same point shares one cache entry and the AppEEARS task is submitted
+once per point and month. Each source also reports the days it actually
+measured (`observed_days`, `start`, `end`): the IMERG final run lags about a
+month and SMAP does not measure every day.
+
+**Graceful degradation:** only NASA POWER is required.
+
+| Missing | The response |
+|---|---|
+| SoilGrids (water, rock, urban mask) | `soil_health.profile: null`; the maths falls back to the farmer's texture and, without it, to the global rain fraction |
+| NDVI history | `soil_health.vegetation_trend: null` |
+| SMAP | `soil_health.soil_moisture: null` |
+| GPM IMERG | `recent_rain: null` |
+| Earthdata credentials (`EARTHDATA_USERNAME` / `PASSWORD`) | SMAP and IMERG are not attempted: both `null`, no error |
+
+NDVI, SMAP and IMERG take minutes (an AppEEARS job, a pile of daily
+granules), so they are **never waited for**: the response uses whatever is
+already cached for the point and the endpoint refreshes it in the background
+after answering. The first farmer on a new plot gets the recommendation
+without them; the next one gets them. `data_sources` says exactly what fed
+**that** response.
 
 **Body — `RecommendationRequest`** (`extra="forbid"`: an unknown field gets `422`)
 
@@ -648,13 +715,17 @@ credentials) plus the agronomic parameter file.
 | `consecutive_campaigns` | `int` | No (`1`) | `>= 0` |
 | `priority_id` | `string \| null` | No (`null`) | `null` uses the first priority |
 | `restriction_ids` | `string[]` | No (`[]`) | Catalog ids |
+| `custom_rotation` | `string[] \| null` | No (`null`) | Crops the farmer chained, in planting order; they come back as an extra option with id `custom`. At most `max_custom_rotation_crops` |
+| `reported_soil_texture` | `"sandy" \| "loamy" \| "clayey" \| null` | No (`null`) | Texture the farmer recognized in their plot (an id of the catalog's `soil_textures`). Wins over SoilGrids |
 
 ```json
 {
   "lat": -5.19, "lon": -80.63, "area_ha": 2.0,
   "planting_date": "2026-12-15",
   "last_crop_id": "rice", "consecutive_campaigns": 3,
-  "priority_id": "save-water", "restriction_ids": ["low-water"]
+  "priority_id": "save-water", "restriction_ids": ["low-water"],
+  "custom_rotation": ["rice", "bean", "maize"],
+  "reported_soil_texture": "sandy"
 }
 ```
 
@@ -666,7 +737,8 @@ An unknown `priority_id`, `restriction_id` or `last_crop_id` returns
 
 | Field | Values |
 |---|---|
-| `options[]` | `id`, `crop_ids`, `cycle_months`, `soil_impact`, `soil_impact_score`, `soil_in_two_years`, `factsheet`, `excluded_by`, `calendar`, `long_term_plan`, `scenarios` |
+| `crops` | The crops `crop_ids` point at (id and display name), so no catalog call is needed |
+| `options[]` | Includes the `custom` option last when the body carries `custom_rotation`. Fields: `id`, `crop_ids`, `cycle_months`, `soil_impact`, `soil_impact_score`, `soil_in_two_years`, `factsheet`, `excluded_by`, `calendar`, `long_term_plan`, `scenarios` |
 | `options[].scenarios` | Always the three keys `heavy_rains`, `normal`, `dry`; each with `irrigation_m3`, `irrigation_m3_per_ha`, `risk_months`, `risk_month_count`, `climate_risk` and the per-month `monthly` breakdown |
 | `options[].calendar` | `planting_date`, `decision_deadline`, `timeline_start`, `timeline_months`, `periods[]` (`crop_id`, `start`, `month_count`), `instructions` |
 | `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
@@ -676,6 +748,12 @@ An unknown `priority_id`, `restriction_id` or `last_crop_id` returns
 | `irrigation_m3` | Water for the **whole rotation cycle** (mind that `cycle_months` differs per option) |
 | `risk_months` (root) | Risk months of the planning horizon, per scenario |
 | `current_practice` | The last crop repeated `defaults.current_practice_campaigns` times |
+| `soil_health.profile` | SoilGrids 0-5 cm; `null` when the pixel has no data. `texture`: `sandy`, `loamy`, `clayey` |
+| `soil_health.texture` / `texture_source` | Texture the irrigation was computed with and who set it: `farmer` (the one the farmer picked, which wins) or `soilgrids`. Both `null` when nobody knows it |
+| `soil_health.vegetation_trend` | NDVI trend; `null` without enough history. `direction`: `down`, `flat`, `up`; `change_ratio` is relative (−0.19 = fell 19%) |
+| `soil_health.soil_moisture` | Moisture of the first 5 cm measured by SMAP over the observation window; `null` until the point is warm. `band`: `dry`, `normal`, `wet`. **Not part of the irrigation maths** |
+| `recent_rain` | Rain measured by GPM IMERG over the plot and the scenario it looks like (`closest_scenario`); `null` until the point is warm. `scenario_totals` is what the same days add up to in each scenario's reference years |
+| `data_sources` | Upstreams that fed **this** response: always `nasa_power`, plus `soilgrids`, `ornl_modis`, `smap`, `gpm_imerg` when they answered and `farmer` when the texture came from the farmer |
 | `scenario_notes`, `repeat_warnings`, `irrigation_source`, `factsheet` | Texts from the parameter file |
 | `climate_basis` | Source, reference years per scenario, ET0 method, thresholds and the monthly climate used |
 | `example_parameters` | True while the JSON still holds example values |
@@ -684,7 +762,7 @@ An unknown `priority_id`, `restriction_id` or `last_crop_id` returns
 
 | Code | When |
 |---|---|
-| `400 invalid_request` | Unknown `priority_id`, `restriction_ids` or `last_crop_id` |
+| `400 invalid_request` | Unknown `priority_id`, `restriction_ids`, `last_crop_id` or `custom_rotation`, or a `custom_rotation` that is too long |
 | `422 validation_error` | Missing, out-of-range or undeclared body field |
 | `502 upstream_error` | NASA POWER returned incomplete data for the reference years |
 | `503 not_configured` | `agro_config.json` is unreadable or inconsistent |

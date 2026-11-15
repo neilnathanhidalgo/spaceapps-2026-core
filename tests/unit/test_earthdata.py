@@ -10,30 +10,6 @@ from spaceapps_core.schemas.common import Location
 from spaceapps_core.schemas.variables import CanonicalVariable
 
 
-@pytest.fixture
-def earthdata_env(monkeypatch) -> None:
-    monkeypatch.setenv("EARTHDATA_USERNAME", "demo-user")
-    monkeypatch.setenv("EARTHDATA_PASSWORD", "demo-pass")
-    from spaceapps_core.core.config import get_settings
-
-    get_settings.cache_clear()
-    EarthdataClient._logged_in = False
-    yield
-    get_settings.cache_clear()
-    EarthdataClient._logged_in = False
-
-
-@pytest.fixture
-def no_earthdata_env(monkeypatch) -> None:
-    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
-    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
-    from spaceapps_core.core.config import get_settings
-
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 @pytest.mark.asyncio
 async def test_imerg_requires_credentials(no_earthdata_env) -> None:
     with pytest.raises(NotConfiguredError):

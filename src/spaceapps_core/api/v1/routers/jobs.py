@@ -4,29 +4,11 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 
-from ....clients.appeears import AppEEARSClient
+from ....clients.appeears import AppEEARSClient, normalize_task_status
 from ....schemas.jobs import JobResult, JobStatus
 from ....services.appeears_jobs import get_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
-
-_STATUS_MAP = {
-    "pending": "pending",
-    "queued": "queued",
-    "processing": "running",
-    "running": "running",
-    "done": "done",
-    "complete": "done",
-    "expired": "failed",
-    "error": "failed",
-    "failed": "failed",
-}
-
-
-def _normalize_status(upstream_status: str | None) -> str:
-    if not upstream_status:
-        return "pending"
-    return _STATUS_MAP.get(upstream_status.lower(), "running")
 
 
 @router.get(
@@ -45,7 +27,7 @@ async def get_job_endpoint(job_id: str) -> JobResult:
     status = JobStatus(
         id=job_id,
         source=entry.source,
-        status=_normalize_status(task.get("status")),  # type: ignore[arg-type]
+        status=normalize_task_status(task.get("status")),  # type: ignore[arg-type]
         progress=None,
         created_at=_parse_iso(task.get("created")) or now,
         updated_at=_parse_iso(task.get("updated")) or now,
@@ -54,11 +36,7 @@ async def get_job_endpoint(job_id: str) -> JobResult:
 
     series = []
     if status.status == "done":
-        files = await client.list_bundle(job_id)
-        csv_files = [f for f in files if (f.get("file_name") or "").lower().endswith(".csv")]
-        for csv_file in csv_files:
-            content = await client.download_file(job_id, csv_file["file_id"])
-            series.extend(client.parse_point_csv(content, entry.layers, entry.location))
+        series = await client.point_task_series(job_id, entry.layers, entry.location)
 
     return JobResult(id=job_id, status=status, series=series)
 

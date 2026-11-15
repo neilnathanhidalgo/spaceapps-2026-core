@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from ..core.cache import async_cached_or_set, make_key
+from ..core.cache import async_cached_or_set, make_key, peek
 from ..core.config import get_settings
 from ..core.errors import NotConfiguredError, UpstreamError
 from ..schemas.common import Location, TimePoint, TimeSeries
@@ -80,6 +80,26 @@ class EarthdataClient(BaseClient):
             kwargs["version"] = version
         return earthaccess.search_data(**kwargs)
 
+    def cache_key(self, *, location: Location, start: date, end: date) -> str:
+        """Key under which `imerg_daily_point` stores this window."""
+        return make_key(
+            "earthdata:imerg_daily",
+            {"lat": location.lat, "lon": location.lon, "start": start, "end": end},
+        )
+
+    def cached_imerg_daily_point(
+        self,
+        *,
+        location: Location,
+        start: date,
+        end: date,
+    ) -> TimeSeries | None:
+        """The window if it is already cached, without logging in or downloading."""
+        data = peek(self.cache_key(location=location, start=start, end=end))
+        if data is None:
+            return None
+        return self._series(location, dict(data)["points"])
+
     async def imerg_daily_point(
         self,
         *,
@@ -88,10 +108,7 @@ class EarthdataClient(BaseClient):
         end: date,
     ) -> TimeSeries:
         settings = get_settings()
-        key = make_key(
-            "earthdata:imerg_daily",
-            {"lat": location.lat, "lon": location.lon, "start": start, "end": end},
-        )
+        key = self.cache_key(location=location, start=start, end=end)
 
         async def fetch() -> dict[str, Any]:
             points = await _run_blocking(
@@ -100,17 +117,19 @@ class EarthdataClient(BaseClient):
             return {"points": points}
 
         data, _ = await async_cached_or_set(key, fetch, settings.cache_ttl_history)
-        points = [
-            TimePoint(date=date.fromisoformat(p["date"]), value=p["value"]) for p in data["points"]
-        ]
+        return self._series(location, data["points"])
 
+    def _series(self, location: Location, raw: list[dict[str, Any]]) -> TimeSeries:
         return TimeSeries(
             source=self.source_name,
             variable=CanonicalVariable.PRECIPITATION,
             unit=CANONICAL_VARIABLES[CanonicalVariable.PRECIPITATION].unit,
             location=location,
             temporal_resolution="daily",
-            points=points,
+            points=[
+                TimePoint(date=date.fromisoformat(point["date"]), value=point["value"])
+                for point in raw
+            ],
             metadata={
                 "short_name": IMERG_DAILY_SHORT_NAME,
                 "variable": IMERG_PRECIP_VARIABLE,

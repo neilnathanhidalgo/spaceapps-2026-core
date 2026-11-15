@@ -17,32 +17,6 @@ from spaceapps_core.schemas.common import Location
 from spaceapps_core.schemas.variables import CanonicalVariable
 
 
-@pytest.fixture
-def earthdata_env(monkeypatch) -> None:
-    monkeypatch.setenv("EARTHDATA_USERNAME", "demo-user")
-    monkeypatch.setenv("EARTHDATA_PASSWORD", "demo-pass")
-    from spaceapps_core.clients.appeears import TOKEN_CACHE_KEY
-    from spaceapps_core.core.cache import get_cache
-    from spaceapps_core.core.config import get_settings
-
-    get_settings.cache_clear()
-    get_cache().delete(TOKEN_CACHE_KEY)
-    yield
-    get_settings.cache_clear()
-    get_cache().delete(TOKEN_CACHE_KEY)
-
-
-@pytest.fixture
-def no_earthdata_env(monkeypatch) -> None:
-    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
-    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
-    from spaceapps_core.core.config import get_settings
-
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-
 @pytest.mark.asyncio
 async def test_login_requires_credentials(no_earthdata_env) -> None:
     client = AppEEARSClient()

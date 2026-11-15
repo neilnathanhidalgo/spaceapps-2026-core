@@ -5,11 +5,19 @@ from datetime import date
 import httpx
 import pytest
 import respx
+from pydantic import ValidationError
 
-from spaceapps_core.core.errors import NotConfiguredError
-from spaceapps_core.schemas.recommendation import RecommendationRequest
+from spaceapps_core.core.errors import InvalidRequestError, NotConfiguredError
+from spaceapps_core.schemas.recommendation import (
+    RecommendationRequest,
+    SoilMoistureState,
+    SoilProfile,
+    VegetationTrend,
+)
 from spaceapps_core.services.agro_config import load_agro_config, parse_agro_config
+from spaceapps_core.services.app_catalog import build_catalog
 from spaceapps_core.services.et0 import extraterrestrial_radiation, reference_et0
+from spaceapps_core.services.recent_rain import ObservedRain
 from spaceapps_core.services.recommendation import (
     MonthlyWeather,
     RankingInput,
@@ -30,15 +38,24 @@ from spaceapps_core.services.recommendation import (
 )
 
 POWER_DAILY_URL = "https://power.larc.nasa.gov/api/temporal/daily/point"
+SOILGRIDS_URL = "https://rest.isric.org/soilgrids/v2.0/properties/query"
+ORNL_URL = "https://modis.ornl.gov/rst/api/v1/MOD13Q1/subset"
 PILOT = {"lat": -5.19, "lon": -80.63}
 
 
-def _crop(crop_id: str, kc: list[float], soil_impact: str) -> dict:
+def _crop(
+    crop_id: str,
+    kc: list[float],
+    soil_impact: str,
+    *,
+    fixes_nitrogen: bool = False,
+) -> dict:
     return {
         "id": crop_id,
         "name": crop_id.title(),
         "kc_by_month": kc,
         "soil_impact": soil_impact,
+        "fixes_nitrogen": fixes_nitrogen,
         "rationale": f"rationale {crop_id}",
         "evidence": f"evidence {crop_id}",
         "benefits": f"benefits {crop_id}",
@@ -53,7 +70,7 @@ def _config_dict(**overrides: object) -> dict:
         "crops": [
             _crop("rice", [1.0, 1.1, 1.2], "degrades"),
             _crop("maize", [0.5, 1.0], "neutral"),
-            _crop("bean", [0.5, 0.9], "improves_a_lot"),
+            _crop("bean", [0.5, 0.9], "improves_a_lot", fixes_nitrogen=True),
             _crop("cotton", [0.4, 0.8, 1.1], "improves"),
         ],
         "rotations": [
@@ -72,7 +89,28 @@ def _config_dict(**overrides: object) -> dict:
             "soil_campaigns_before_penalty": 1,
             "soil_horizon_months": 24,
             "decision_lead_days": 0,
+            "sandy_sand_percent": 70.0,
+            "clayey_clay_percent": 35.0,
+            "effective_rain_fraction_by_texture": {"sandy": 0.5},
+            "soil_organic_carbon_low_g_kg": 10.0,
+            "soil_organic_carbon_high_g_kg": 20.0,
+            "soil_vegetation_decline_penalty": 1,
+            "vegetation_trend_years": 5,
+            "vegetation_flat_tolerance": 0.05,
+            "vegetation_season_start_month": 1,
+            "vegetation_season_end_month": 4,
+            "max_custom_rotation_crops": 3,
+            "crop_water_need_medium_index": 2.0,
+            "crop_water_need_high_index": 3.0,
+            "observation_window_months": 2,
+            "soil_moisture_dry_m3_m3": 0.12,
+            "soil_moisture_wet_m3_m3": 0.25,
         },
+        "soil_textures": [
+            {"id": "sandy", "name": "Arenosa", "description": "Se desarma en la mano."},
+            {"id": "loamy", "name": "Franca", "description": "Se hace bola y se rompe."},
+            {"id": "clayey", "name": "Arcillosa", "description": "Se pega en la mano."},
+        ],
         "priorities": [
             {
                 "id": "save-water",
@@ -105,9 +143,16 @@ def _config_dict(**overrides: object) -> dict:
         "defaults": {"last_crop_id": "rice", "current_practice_campaigns": 2},
         "content": {
             "irrigation_source": "Poechos",
+            "soil_texture_question": "¿A cuál se parece tu tierra?",
             "scenario_notes": {"heavy_rains": "A, ", "normal": "B, ", "dry": "C, "},
             "repeat_warnings": {"heavy_rains": "A", "normal": "B", "dry": "C"},
             "soil_findings": ["Lleva {campaigns} campañas seguidas de {crop}."],
+            "soil_texture_findings": {"sandy": "Tierra arenosa ({sand}% de arena)."},
+            "soil_reported_texture_findings": {"clayey": "Nos dijiste que es arcillosa."},
+            "soil_moisture_findings": {"dry": "Tierra seca en {days} días ({moisture})."},
+            "recent_rain_findings": {"dry": "Llovieron {total} mm en {days} días: año seco."},
+            "soil_carbon_findings": {"normal": "Materia orgánica media ({carbon} g/kg)."},
+            "vegetation_findings": {"down": "El verdor bajó {percent} desde {start_year}."},
         },
     }
     config.update(overrides)
@@ -376,9 +421,189 @@ def test_build_recommendation_excludes_thirsty_options_with_low_water() -> None:
     assert all("low-water" in option.excluded_by for option in response.options)
 
 
-def test_build_recommendation_rejects_unknown_ids() -> None:
-    from spaceapps_core.core.errors import InvalidRequestError
+SANDY_SOIL = SoilProfile(
+    sand_percent=79.3,
+    clay_percent=7.0,
+    organic_carbon_g_kg=13.5,
+    texture="sandy",
+    depth="0-5cm",
+)
+FALLING_GREENNESS = VegetationTrend(
+    start_year=2021,
+    end_year=2026,
+    start_ndvi=0.42,
+    end_ndvi=0.34,
+    change_ratio=-0.19,
+    direction="down",
+)
+DRY_TOPSOIL = SoilMoistureState(
+    mean_m3_m3=0.08,
+    band="dry",
+    start=date(2026, 9, 1),
+    end=date(2026, 10, 31),
+    observed_days=42,
+)
+FEBRUARY_RAIN = ObservedRain(
+    total_mm=12.0,
+    observed_days=28,
+    start=date(2027, 2, 1),
+    end=date(2027, 2, 28),
+    days_by_month={2: 28},
+)
 
+
+def test_local_soil_raises_the_irrigation_and_tires_the_soil() -> None:
+    config = parse_agro_config(_config_dict())
+
+    without = build_recommendation(_request(), config, CLIMATES)
+    with_soil = build_recommendation(
+        _request(), config, CLIMATES, soil=SANDY_SOIL, vegetation=FALLING_GREENNESS
+    )
+
+    # Un suelo arenoso aprovecha menos la lluvia, así que hay que regar más.
+    assert (
+        with_soil.options[0].scenarios["normal"].irrigation_m3
+        > without.options[0].scenarios["normal"].irrigation_m3
+    )
+    assert with_soil.climate_basis.effective_rain_fraction == 0.5
+    assert without.soil_health.condition == "tired"
+    assert with_soil.soil_health.condition == "very_tired"
+    assert with_soil.data_sources == ["nasa_power", "soilgrids", "ornl_modis"]
+    assert without.data_sources == ["nasa_power"]
+
+
+def test_soil_findings_explain_texture_carbon_and_greenness() -> None:
+    config = parse_agro_config(_config_dict())
+
+    response = build_recommendation(
+        _request(), config, CLIMATES, soil=SANDY_SOIL, vegetation=FALLING_GREENNESS
+    )
+
+    assert response.soil_health.findings == [
+        "Lleva 3 campañas seguidas de rice.",
+        "Tierra arenosa (79% de arena).",
+        "Materia orgánica media (13.5 g/kg).",
+        "El verdor bajó 19% desde 2021.",
+    ]
+    assert response.soil_health.profile == SANDY_SOIL
+    assert response.soil_health.vegetation_trend == FALLING_GREENNESS
+
+
+def test_the_farmer_texture_wins_over_soilgrids() -> None:
+    config = parse_agro_config(_config_dict())
+
+    measured = build_recommendation(_request(), config, CLIMATES, soil=SANDY_SOIL)
+    reported = build_recommendation(
+        _request(reported_soil_texture="clayey"), config, CLIMATES, soil=SANDY_SOIL
+    )
+
+    assert measured.soil_health.texture_source == "soilgrids"
+    assert reported.soil_health.texture_source == "farmer"
+    assert reported.soil_health.texture == "clayey"
+    # El perfil de SoilGrids se sigue entregando tal cual: solo cambia quién
+    # manda en el cálculo.
+    assert reported.soil_health.profile == SANDY_SOIL
+    # Sin fracción para "clayey" se usa la global (0.8), que aprovecha más la
+    # lluvia que la arenosa (0.5), así que hay que regar menos.
+    assert reported.climate_basis.effective_rain_fraction == 0.8
+    assert (
+        reported.options[0].scenarios["heavy_rains"].irrigation_m3
+        < measured.options[0].scenarios["heavy_rains"].irrigation_m3
+    )
+    assert "Nos dijiste que es arcillosa." in reported.soil_health.findings
+    assert not any("arenosa" in finding for finding in reported.soil_health.findings)
+    assert reported.data_sources == ["nasa_power", "soilgrids", "farmer"]
+
+
+def test_catalog_crops_carry_water_duration_and_nitrogen() -> None:
+    catalog = build_catalog(parse_agro_config(_config_dict()))
+    crops = {crop.id: crop for crop in catalog.crops}
+
+    assert crops["rice"].water_index == 3.3
+    assert crops["rice"].water_need == "high"
+    assert crops["cotton"].water_need == "medium"
+    assert crops["maize"].water_need == "low"
+    assert crops["rice"].cycle_months == 3
+    assert crops["bean"].fixes_nitrogen is True
+    assert crops["rice"].fixes_nitrogen is False
+    assert [texture.id for texture in catalog.soil_textures] == ["sandy", "loamy", "clayey"]
+    assert catalog.soil_texture_question
+
+
+def test_measured_water_is_reported_without_moving_the_irrigation() -> None:
+    config = parse_agro_config(_config_dict())
+    climates = {
+        "heavy_rains": _climate([10, 200] + [10] * 10),
+        "normal": _climate([50] * 12),
+        "dry": _climate([10] * 12),
+    }
+
+    without = build_recommendation(_request(), config, climates)
+    with_observations = build_recommendation(
+        _request(),
+        config,
+        climates,
+        soil_moisture=DRY_TOPSOIL,
+        recent_rain=FEBRUARY_RAIN,
+    )
+
+    # SMAP mide los primeros 5 cm, no el agua de las raíces: se informa, no
+    # se mete en el balance de riego (decisión documentada en el README).
+    assert (
+        with_observations.options[0].scenarios["normal"].irrigation_m3
+        == without.options[0].scenarios["normal"].irrigation_m3
+    )
+    assert with_observations.soil_health.soil_moisture == DRY_TOPSOIL
+    assert "Tierra seca en 42 días (0.08)." in with_observations.soil_health.findings
+
+    rain = with_observations.recent_rain
+    assert rain is not None
+    # 12 mm medidos contra 200 / 50 / 10 esperados: el año va como uno seco.
+    assert rain.scenario_totals == {"heavy_rains": 200.0, "normal": 50.0, "dry": 10.0}
+    assert rain.closest_scenario == "dry"
+    assert rain.finding == "Llovieron 12.0 mm en 28 días: año seco."
+    assert with_observations.data_sources == ["nasa_power", "smap", "gpm_imerg"]
+    assert without.recent_rain is None
+    assert without.soil_health.soil_moisture is None
+
+
+def test_custom_rotation_comes_back_as_one_more_option() -> None:
+    config = parse_agro_config(_config_dict())
+
+    response = build_recommendation(
+        _request(custom_rotation=["rice", "bean", "maize"]), config, CLIMATES
+    )
+    custom = next(option for option in response.options if option.id == "custom")
+
+    assert [option.id for option in response.options] == ["r1", "r2", "r3", "custom"]
+    assert custom.crop_ids == ["rice", "bean", "maize"]
+    assert custom.cycle_months == 7
+    assert custom.calendar.periods[0].crop_id == "rice"
+    # El arroz resta y el frejol suma: la secuencia mejora, pero menos.
+    assert custom.soil_impact == "improves"
+    assert set(custom.scenarios) == {"heavy_rains", "normal", "dry"}
+    assert "custom" in response.ranking["save-water"]["normal"]
+
+
+def test_custom_rotation_is_validated() -> None:
+    config = parse_agro_config(_config_dict())
+
+    with pytest.raises(InvalidRequestError):
+        build_recommendation(_request(custom_rotation=["quinoa"]), config, CLIMATES)
+    with pytest.raises(InvalidRequestError):
+        build_recommendation(
+            _request(custom_rotation=["rice", "bean", "maize", "cotton"]), config, CLIMATES
+        )
+
+
+def test_config_reserves_the_custom_rotation_id() -> None:
+    broken = _config_dict(rotations=[{"id": "custom", "crop_ids": ["maize"]}])
+
+    with pytest.raises(ValidationError):
+        parse_agro_config(broken)
+
+
+def test_build_recommendation_rejects_unknown_ids() -> None:
     config = parse_agro_config(_config_dict())
 
     with pytest.raises(InvalidRequestError):
@@ -458,28 +683,64 @@ def test_catalog_endpoint(client) -> None:
     assert data["priorities"][0]["id"] == "lower-climate-risk"
     assert {crop["id"] for crop in data["crops"]} >= {"rice", "maize", "bean"}
     assert all(crop["cycle_months"] >= 1 for crop in data["crops"])
+    assert data["max_rotation_crops"] >= 2
+    assert {texture["id"] for texture in data["soil_textures"]} == {
+        "sandy",
+        "loamy",
+        "clayey",
+    }
+    assert data["soil_texture_question"]
+    assert {crop["id"] for crop in data["crops"] if crop["fixes_nitrogen"]} == {"bean", "pulse"}
 
 
-def test_recommendation_endpoint(client) -> None:
+def _soilgrids_payload() -> dict:
+    def layer(name: str, mean: float | None) -> dict:
+        return {
+            "name": name,
+            "unit_measure": {"d_factor": 10},
+            "depths": [{"label": "0-5cm", "values": {"mean": mean}}],
+        }
+
+    return {"properties": {"layers": [layer("sand", 793), layer("clay", 70), layer("soc", 135)]}}
+
+
+def _ndvi_payload(request: httpx.Request) -> httpx.Response:
+    year = request.url.params["startDate"][1:5]
+    value = 5000 if year == "2021" else 4000
+    return httpx.Response(
+        200,
+        json={
+            "scale": "0.0001",
+            "subset": [{"calendar_date": f"{year}-02-01", "data": [value]}],
+        },
+    )
+
+
+def _mock_upstreams(mock: respx.MockRouter) -> None:
     def power(request: httpx.Request) -> httpx.Response:
         year = int(request.url.params["start"][:4])
         rain = 20.0 if year in (1998, 2017, 2023) else 1.0
         return httpx.Response(200, json=_power_payload(year, rain))
 
+    mock.get(POWER_DAILY_URL).mock(side_effect=power)
+    mock.get(SOILGRIDS_URL).mock(return_value=httpx.Response(200, json=_soilgrids_payload()))
+    mock.get(ORNL_URL).mock(side_effect=_ndvi_payload)
+
+
+def test_recommendation_endpoint(client) -> None:
+    body = {
+        **PILOT,
+        "area_ha": 2.0,
+        "planting_date": "2026-12-15",
+        "last_crop_id": "rice",
+        "consecutive_campaigns": 3,
+        "priority_id": "save-water",
+        "restriction_ids": ["low-water"],
+        "custom_rotation": ["rice", "bean", "maize"],
+    }
     with respx.mock(assert_all_called=True) as mock:
-        mock.get(POWER_DAILY_URL).mock(side_effect=power)
-        r = client.post(
-            "/api/v1/app/recommendation",
-            json={
-                **PILOT,
-                "area_ha": 2.0,
-                "planting_date": "2026-12-15",
-                "last_crop_id": "rice",
-                "consecutive_campaigns": 3,
-                "priority_id": "save-water",
-                "restriction_ids": ["low-water"],
-            },
-        )
+        _mock_upstreams(mock)
+        r = client.post("/api/v1/app/recommendation", json=body)
 
     assert r.status_code == 200
     data = r.json()
@@ -490,6 +751,13 @@ def test_recommendation_endpoint(client) -> None:
     assert sorted(data["ranking"]["save-water"]["normal"]) == sorted(
         option["id"] for option in data["options"]
     )
+    assert {crop["id"] for crop in data["crops"]} >= {"rice", "maize"}
+    # El verdor no se espera: la primera respuesta no lo trae y la tarea de
+    # fondo deja las ventanas de NDVI en caché.
+    assert data["data_sources"] == ["nasa_power", "soilgrids"]
+    assert data["soil_health"]["profile"]["texture"] == "sandy"
+    assert data["soil_health"]["vegetation_trend"] is None
+    assert [option["id"] for option in data["options"]][-1] == "custom"
     assert data["climate_basis"]["source"] == "nasa_power"
     assert len(data["climate_basis"]["monthly_climate"]["normal"]) == 12
 
@@ -526,3 +794,52 @@ def test_recommendation_endpoint_forbids_extra_fields(client) -> None:
     )
 
     assert r.status_code == 422
+
+
+def test_recommendation_endpoint_survives_soil_and_ndvi_outages(client) -> None:
+    with respx.mock(assert_all_called=True) as mock:
+        _mock_upstreams(mock)
+        mock.get(SOILGRIDS_URL).mock(return_value=httpx.Response(400, text="masked pixel"))
+        mock.get(ORNL_URL).mock(return_value=httpx.Response(400, text="no product"))
+        r = client.post(
+            "/api/v1/app/recommendation",
+            json={**PILOT, "planting_date": "2026-12-15"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["data_sources"] == ["nasa_power"]
+    assert data["soil_health"]["profile"] is None
+    assert data["soil_health"]["vegetation_trend"] is None
+
+
+def test_recommendation_endpoint_rejects_an_unknown_custom_crop(client) -> None:
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.get(POWER_DAILY_URL).mock(return_value=httpx.Response(200, json={}))
+        r = client.post(
+            "/api/v1/app/recommendation",
+            json={
+                **PILOT,
+                "planting_date": "2026-12-15",
+                "custom_rotation": ["rice", "quinoa"],
+            },
+        )
+
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "invalid_request"
+    assert not route.called
+
+
+def test_recommendation_endpoint_adds_the_greenness_once_warm(client) -> None:
+    body = {**PILOT, "planting_date": "2026-12-15"}
+    with respx.mock(assert_all_called=True) as mock:
+        _mock_upstreams(mock)
+        first = client.post("/api/v1/app/recommendation", json=body).json()
+        second = client.post("/api/v1/app/recommendation", json=body).json()
+
+    assert first["soil_health"]["vegetation_trend"] is None
+    trend = second["soil_health"]["vegetation_trend"]
+    assert trend["direction"] == "down"
+    assert trend["start_year"] == 2021
+    assert second["data_sources"] == ["nasa_power", "soilgrids", "ornl_modis"]
+    assert any("verdor" in finding for finding in second["soil_health"]["findings"])

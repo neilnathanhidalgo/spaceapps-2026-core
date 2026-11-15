@@ -28,6 +28,14 @@ def make_key(namespace: str, params: dict[str, Any]) -> str:
     return f"{namespace}:{digest}"
 
 
+def peek(key: str):
+    """Value already cached under `key`, or `None` if it is not there.
+
+    Lets a caller use what is cached without waiting for a slow upstream.
+    """
+    return get_cache().get(key)
+
+
 def cached_or_set(key: str, factory, ttl: int):
     cache = get_cache()
     hit = cache.get(key)

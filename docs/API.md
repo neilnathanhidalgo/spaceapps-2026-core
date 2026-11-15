@@ -586,7 +586,8 @@ No requiere credenciales.
 ---
 
 ### `GET /api/v1/app/catalog`
-Cultivos, prioridades y restricciones entre las que elige el agricultor.
+Cultivos, prioridades, restricciones y texturas de suelo entre las que elige el
+agricultor.
 Sale del archivo de parámetros agronómicos
 (`src/spaceapps_core/data/agro_config.json`, configurable con
 `AGRO_CONFIG_PATH`). No requiere credenciales.
@@ -597,8 +598,14 @@ Sale del archivo de parámetros agronómicos
 ```json
 {
   "crops": [
-    { "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades" },
-    { "id": "maize", "name": "Maíz", "cycle_months": 4, "soil_impact": "neutral" }
+    {
+      "id": "rice", "name": "Arroz", "cycle_months": 5, "soil_impact": "degrades",
+      "water_need": "high", "water_index": 5.3, "fixes_nitrogen": false
+    },
+    {
+      "id": "bean", "name": "Frejol", "cycle_months": 3, "soil_impact": "improves_a_lot",
+      "water_need": "low", "water_index": 2.35, "fixes_nitrogen": true
+    }
   ],
   "priorities": [
     { "id": "lower-climate-risk", "name": "Menos riesgo de clima", "phrase": "tener menos riesgo de clima" },
@@ -609,6 +616,13 @@ Sale del archivo de parámetros agronómicos
     { "id": "no-cotton-buyer", "name": "No tengo comprador para algodón" },
     { "id": "low-water", "name": "Tendré poca agua" }
   ],
+  "soil_textures": [
+    { "id": "sandy", "name": "Arenosa", "description": "Se desarma en la mano y se siente como arena. El agua se va rápido." },
+    { "id": "loamy", "name": "Franca", "description": "Se hace bola húmeda pero se rompe sin esfuerzo. Guarda bien el agua." },
+    { "id": "clayey", "name": "Arcillosa", "description": "Se pega en la mano y se parte en terrones duros al secarse. Se encharca." }
+  ],
+  "soil_texture_question": "¿A cuál de estas se parece tu tierra?",
+  "max_rotation_crops": 4,
   "example_parameters": true
 }
 ```
@@ -616,8 +630,13 @@ Sale del archivo de parámetros agronómicos
 | Campo | Notas |
 |---|---|
 | `priorities` | En orden de presentación; **la primera es la sugerida** cuando el agricultor no elige |
+| `max_rotation_crops` | Cuántos cultivos puede encadenar el agricultor en `custom_rotation` |
 | `cycle_months` | Duración del ciclo del cultivo, en meses (= largo de `kc_by_month`) |
 | `soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot` |
+| `water_index` | Agua que pide el ciclo, en meses de ET0 completa (suma de los `kc_by_month`). Es independiente del clima y de la parcela: sirve para comparar cultivos entre sí, no para estimar m³ |
+| `water_need` | `low` / `medium` / `high`: banda de `water_index` según `crop_water_need_medium_index` y `crop_water_need_high_index` |
+| `fixes_nitrogen` | Si el cultivo le deja nitrógeno al siguiente. Es informativo: el beneficio ya está contado en `soil_impact` y **no** se suma dos veces |
+| `soil_textures` | Respuestas a `soil_texture_question`, para la pregunta "¿a cuál se parece tu tierra?" de Mi parcela. La respuesta se manda en `reported_soil_texture`. Lista vacía = la app oculta la pregunta |
 | `example_parameters` | `true` mientras algún bloque del JSON siga marcado con `"_example": true` |
 
 ---
@@ -625,8 +644,10 @@ Sale del archivo de parámetros agronómicos
 ### `POST /api/v1/app/recommendation`
 Recomendación de rotación para la pantalla **Qué sembrar** (y "¿Cuándo
 siembro?" y "Rotación"). Calcula **los tres escenarios de una sola vez**, para
-que la app pueda cambiar de escenario sin volver a pedir datos. Solo usa
-**NASA POWER** (sin credenciales) y el archivo de parámetros agronómicos.
+que la app pueda cambiar de escenario sin volver a pedir datos. Lo único
+obligatorio es **NASA POWER** (sin credenciales) y el archivo de parámetros
+agronómicos; el resto de lo que observa la parcela (SoilGrids, MODIS, SMAP,
+GPM IMERG y la textura que reporta el agricultor) suma cuando está.
 
 **Cómo se calcula**
 
@@ -649,26 +670,80 @@ que la app pueda cambiar de escenario sin volver a pedir datos. Solo usa
    `risk_month_rain_mm`. El riesgo de una opción es cuántos meses de **su**
    calendario caen en esos meses, con nivel `low` / `medium` / `high` según
    `climate_risk_medium_months` y `climate_risk_high_months`.
-6. **Tierra:** el estado actual sale del último cultivo y de cuántas campañas
-   seguidas lleva con él
-   (`soil_baseline_score + impacto_del_cultivo × (campañas − soil_campaigns_before_penalty)`,
-   acotado a la escala `very_tired` → `good`). El estado "en dos años" aplica el
-   `soil_impact` de cada cultivo de la rotación, repitiéndola hasta cubrir
+6. **Suelo local (SoilGrids + el agricultor):** arena, arcilla y carbono
+   orgánico del punto (0-5 cm). La textura (`sandy` / `loamy` / `clayey`)
+   reemplaza la fracción de lluvia efectiva por la de
+   `effective_rain_fraction_by_texture`, así que un suelo arenoso necesita más
+   riego. **La textura que manda es la que reportó el agricultor**
+   (`reported_soil_texture`): él tiene la tierra en la mano y SoilGrids
+   promedia 250 m. `soil_health.texture_source` dice quién la puso
+   (`farmer` / `soilgrids`) y `soil_health.profile` sigue entregando lo que
+   midió SoilGrids tal cual. El carbono orgánico mueve ±1 el punto de partida
+   del suelo según `soil_organic_carbon_low_g_kg` /
+   `soil_organic_carbon_high_g_kg`.
+7. **Verdor (MODIS NDVI, ORNL DAAC):** media anual de NDVI de los últimos
+   `vegetation_trend_years` años; se compara el primer año con el último. Si
+   cayó más de `vegetation_flat_tolerance`, el suelo pierde
+   `soil_vegetation_decline_penalty` puntos.
+8. **Humedad medida (SMAP):** media de la humedad volumétrica de los
+   primeros 5 cm en la ventana de observación, con su banda `dry` / `normal` /
+   `wet` según `soil_moisture_dry_m3_m3` / `soil_moisture_wet_m3_m3`. Se
+   **informa, no se calcula con ella**: los primeros 5 cm no son el agua que
+   tienen las raíces, y convertir eso en un balance de riego es una decisión
+   del equipo agronómico.
+9. **Lluvia medida (GPM IMERG):** lluvia acumulada sobre la parcela en la
+   ventana de observación (0.1°, más fino que los 0.5° de POWER) comparada con
+   lo que los mismos días llueven en los años de referencia de cada escenario
+   (prorrateando el mes por los días medidos). `recent_rain.closest_scenario`
+   es el escenario al que se parece el año; es la respuesta medida a la
+   pregunta que está detrás de los tres escenarios.
+10. **Tierra:** el estado actual sale del punto de partida (base + carbono −
+   verdor), del último cultivo y de cuántas campañas seguidas lleva con él
+   (`× (campañas − soil_campaigns_before_penalty)`), acotado a la escala
+   `very_tired` → `good`. El estado "en dos años" aplica el `soil_impact` de
+   cada cultivo de la rotación, repitiéndola hasta cubrir
    `soil_horizon_months`.
-7. **Restricciones:** cada opción trae `excluded_by` con las restricciones que
+11. **Restricciones:** cada opción trae `excluded_by` con las restricciones que
    la descartan; **ninguna opción se elimina de la respuesta** (la app ya sabe
    ocultarlas). Una restricción descarta por cultivo (`excludes_crop_ids`) o por
    consumo de agua (`excludes_high_water_use`, cuando el agua por hectárea
    supera `low_water_m3_per_ha` **en algún escenario**).
-8. **Ranking por prioridad y escenario** (se calcula para **todas** las
-   prioridades del catálogo, no solo la elegida):
+12. **Ranking por prioridad y escenario** (se calcula para **todas** las
+    prioridades del catálogo, no solo la elegida):
    - `save-water` (`least_water`): menos agua de riego;
    - `restore-soil` (`most_soil_improvement`): mayor mejora de la tierra; en
      empate, menos meses de riesgo;
    - `lower-climate-risk` (`least_climate_risk`): menos meses de riesgo; en
      empate, menos agua.
 
-   Los empates conservan el orden del catálogo.
+    Los empates conservan el orden del catálogo.
+
+**Ventana de observación (SMAP e IMERG):** los últimos
+`observation_window_months` meses calendario **completos** (con
+`observation_window_months: 2`, el 15 de noviembre de 2026 son el 1 de
+septiembre y el 31 de octubre). No se mueve dentro del mes a propósito: así
+todos los que preguntan por el mismo punto comparten la misma entrada de caché
+y la tarea de AppEEARS se envía una sola vez por punto y mes. Cada fuente
+reporta además los días que realmente midió (`observed_days`, `start`, `end`):
+la corrida final de IMERG llega con cerca de un mes de retraso y SMAP no mide
+todos los días.
+
+**Degradación con gracia:** solo NASA POWER es obligatorio.
+
+| Si falta | La respuesta |
+|---|---|
+| SoilGrids (píxel de agua, roca o ciudad) | `soil_health.profile: null`; el cálculo usa la textura que reportó el agricultor y, si tampoco está, la fracción de lluvia global |
+| Historial de NDVI | `soil_health.vegetation_trend: null` |
+| SMAP | `soil_health.soil_moisture: null` |
+| GPM IMERG | `recent_rain: null` |
+| Credenciales de Earthdata (`EARTHDATA_USERNAME` / `PASSWORD`) | SMAP e IMERG no se intentan: ambos en `null`, sin error |
+
+NDVI, SMAP e IMERG tardan minutos (una tarea de AppEEARS, un montón de
+gránulos diarios), así que **nunca se esperan**: la respuesta usa lo que ya
+está en caché para el punto y el endpoint lo refresca en segundo plano después
+de contestar. El primer agricultor de una parcela nueva recibe la
+recomendación sin ellos y el siguiente ya los tiene. `data_sources` dice
+exactamente qué alimentó **esa** respuesta.
 
 **Cuerpo — `RecommendationRequest`** (`extra="forbid"`: un campo desconocido
 responde `422`)
@@ -683,6 +758,8 @@ responde `422`)
 | `consecutive_campaigns` | `int` | No (`1`) | `>= 0`, campañas seguidas con ese cultivo |
 | `priority_id` | `string \| null` | No (`null`) | `null` usa la primera prioridad del catálogo |
 | `restriction_ids` | `string[]` | No (`[]`) | Ids del catálogo |
+| `custom_rotation` | `string[] \| null` | No (`null`) | Cultivos que arma el agricultor, en orden de siembra; vuelven como una opción extra con id `custom`. Máximo `max_custom_rotation_crops` |
+| `reported_soil_texture` | `"sandy" \| "loamy" \| "clayey" \| null` | No (`null`) | Textura que el agricultor reconoció en su chacra (id de `soil_textures` del catálogo). Manda sobre SoilGrids |
 
 ```json
 {
@@ -692,7 +769,9 @@ responde `422`)
   "last_crop_id": "rice",
   "consecutive_campaigns": 3,
   "priority_id": "save-water",
-  "restriction_ids": ["low-water"]
+  "restriction_ids": ["low-water"],
+  "custom_rotation": ["rice", "bean", "maize"],
+  "reported_soil_texture": "sandy"
 }
 ```
 
@@ -708,6 +787,12 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
   "planting_date": "2026-12-15",
   "priority_id": "save-water",
   "restriction_ids": ["low-water"],
+  "crops": [
+    {
+      "id": "maize", "name": "Maíz", "cycle_months": 4, "soil_impact": "neutral",
+      "water_need": "medium", "water_index": 3.05, "fixes_nitrogen": false
+    }
+  ],
   "options": [
     {
       "id": "r1",
@@ -777,8 +862,39 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
     "scenarios": { "normal": { "irrigation_m3": 28684.0, "irrigation_m3_per_ha": 14342.0, "risk_months": [], "risk_month_count": 0, "climate_risk": "low", "monthly": [] } }
   },
   "soil_health": {
-    "condition": "tired",
-    "findings": ["Lleva 3 campañas seguidas de arroz.", "Tiene poca materia orgánica."]
+    "condition": "very_tired",
+    "findings": [
+      "Lleva 3 campañas seguidas de arroz.",
+      "Nos dijiste que tu tierra es arenosa: el agua de riego se va rápido.",
+      "Su materia orgánica está en un nivel medio (13.5 g/kg de carbono).",
+      "El verdor de tus cultivos bajó 19% entre 2021 y 2026 (MODIS, NASA).",
+      "El satélite SMAP midió tu tierra seca en los últimos 38 días (0.09 m³ de agua por m³ de tierra)."
+    ],
+    "texture": "sandy",
+    "texture_source": "farmer",
+    "profile": {
+      "sand_percent": 79.3, "clay_percent": 7.0, "organic_carbon_g_kg": 13.5,
+      "texture": "sandy", "depth": "0-5cm", "source": "soilgrids"
+    },
+    "vegetation_trend": {
+      "start_year": 2021, "end_year": 2026, "start_ndvi": 0.42, "end_ndvi": 0.34,
+      "change_ratio": -0.19, "direction": "down", "source": "ornl_modis"
+    },
+    "soil_moisture": {
+      "mean_m3_m3": 0.09, "band": "dry",
+      "start": "2026-09-02", "end": "2026-10-30", "observed_days": 38,
+      "source": "smap"
+    }
+  },
+  "recent_rain": {
+    "start": "2026-09-01",
+    "end": "2026-09-30",
+    "observed_days": 30,
+    "total_mm": 4.2,
+    "scenario_totals": { "heavy_rains": 61.0, "normal": 9.8, "dry": 2.1 },
+    "closest_scenario": "dry",
+    "finding": "En tu chacra llovieron 4.2 mm en los últimos 30 días medidos por el satélite GPM: la lluvia va como en un año seco.",
+    "source": "gpm_imerg"
   },
   "risk_months": {
     "heavy_rains": ["2027-02-01", "2027-03-01"],
@@ -808,6 +924,7 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
       ]
     }
   },
+  "data_sources": ["nasa_power", "soilgrids", "ornl_modis", "smap", "gpm_imerg", "farmer"],
   "example_parameters": true,
   "generated_at": "2026-11-14T15:23:42"
 }
@@ -815,6 +932,8 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
 
 | Campo | Notas |
 |---|---|
+| `crops` | Los cultivos a los que apuntan los `crop_ids` (id y nombre visible), para no tener que pedir el catálogo |
+| `options[]` | Incluye la opción `custom` al final cuando el cuerpo trae `custom_rotation` |
 | `options[].scenarios` | Siempre las tres claves `heavy_rains`, `normal`, `dry` |
 | `options[].excluded_by` | Ids de restricción que descartan la opción (independiente de las que envió el agricultor) |
 | `options[].soil_impact` | `degrades`, `neutral`, `improves`, `improves_a_lot`, derivado de `soil_impact_score` (suma de los impactos de sus cultivos) |
@@ -824,6 +943,12 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
 | `irrigation_m3` | Agua de riego de **todo el ciclo** de la rotación (ojo: `cycle_months` cambia entre opciones) |
 | `risk_months` (raíz) | Meses de riesgo del horizonte de planificación, por escenario |
 | `current_practice` | El último cultivo repetido `defaults.current_practice_campaigns` veces |
+| `soil_health.profile` | SoilGrids 0-5 cm; `null` si el píxel no tiene datos. `texture`: `sandy`, `loamy`, `clayey` |
+| `soil_health.texture` / `texture_source` | Textura con la que se calculó el riego y quién la puso: `farmer` (la que eligió el agricultor, manda) o `soilgrids`. Ambas en `null` si nadie la sabe |
+| `soil_health.vegetation_trend` | Tendencia de NDVI; `null` sin historial suficiente. `direction`: `down`, `flat`, `up`; `change_ratio` relativo (−0.19 = bajó 19%) |
+| `soil_health.soil_moisture` | Humedad de los primeros 5 cm medida por SMAP en la ventana de observación; `null` hasta que el punto esté caliente. `band`: `dry`, `normal`, `wet`. **No entra en el cálculo del riego** |
+| `recent_rain` | Lluvia medida por GPM IMERG sobre la parcela y el escenario al que se parece (`closest_scenario`); `null` hasta que el punto esté caliente. `scenario_totals` es lo que esos mismos días llueven en los años de referencia de cada escenario |
+| `data_sources` | Fuentes que alimentaron **esta** respuesta: `nasa_power` siempre, más `soilgrids`, `ornl_modis`, `smap`, `gpm_imerg` cuando respondieron y `farmer` cuando la textura la puso el agricultor |
 | `scenario_notes`, `repeat_warnings`, `irrigation_source`, `factsheet` | Textos del archivo de parámetros (decisión B11) |
 | `example_parameters` | `true` mientras el JSON tenga valores de ejemplo |
 
@@ -831,7 +956,7 @@ Un `priority_id`, `restriction_id` o `last_crop_id` que no exista responde
 
 | Código | Cuándo |
 |---|---|
-| `400 invalid_request` | `priority_id`, `restriction_ids` o `last_crop_id` desconocidos |
+| `400 invalid_request` | `priority_id`, `restriction_ids`, `last_crop_id` o `custom_rotation` desconocidos, o `custom_rotation` demasiado larga |
 | `422 validation_error` | Campo faltante, fuera de rango o no declarado en el cuerpo |
 | `502 upstream_error` | NASA POWER no devolvió datos completos para los años de referencia |
 | `503 not_configured` | `agro_config.json` no se puede leer o no es coherente |
