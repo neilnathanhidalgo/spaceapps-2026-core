@@ -34,6 +34,7 @@ from spaceapps_core.services.recommendation import (
     rank_options,
     repeated_crops,
     risky_months_of_year,
+    rule_warnings,
     soil_impact_of,
 )
 
@@ -49,10 +50,14 @@ def _crop(
     soil_impact: str,
     *,
     fixes_nitrogen: bool = False,
+    family: str | None = None,
+    planting_months: list[int] | None = None,
 ) -> dict:
     return {
         "id": crop_id,
         "name": crop_id.title(),
+        "family": family or crop_id,
+        "planting_months": planting_months or list(range(1, 13)),
         "kc_by_month": kc,
         "soil_impact": soil_impact,
         "fixes_nitrogen": fixes_nitrogen,
@@ -147,6 +152,8 @@ def _config_dict(**overrides: object) -> dict:
             "scenario_notes": {"heavy_rains": "A, ", "normal": "B, ", "dry": "C, "},
             "repeat_warnings": {"heavy_rains": "A", "normal": "B", "dry": "C"},
             "soil_findings": ["Lleva {campaigns} campañas seguidas de {crop}."],
+            "same_family_warning": "{first} y {second}: {family}",
+            "planting_month_warning": "{crop} en {month}, no en {months}",
             "soil_texture_findings": {"sandy": "Tierra arenosa ({sand}% de arena)."},
             "soil_reported_texture_findings": {"clayey": "Nos dijiste que es arcillosa."},
             "soil_moisture_findings": {"dry": "Tierra seca en {days} días ({moisture})."},
@@ -843,3 +850,79 @@ def test_recommendation_endpoint_adds_the_greenness_once_warm(client) -> None:
     assert trend["start_year"] == 2021
     assert second["data_sources"] == ["nasa_power", "soilgrids", "ornl_modis"]
     assert any("verdor" in finding for finding in second["soil_health"]["findings"])
+
+
+def test_same_family_in_a_row_warns_and_is_never_low_risk() -> None:
+    config = parse_agro_config(_config_dict())
+    request = RecommendationRequest(
+        **PILOT, planting_date=date(2026, 12, 1), custom_rotation=["rice", "rice"]
+    )
+
+    response = build_recommendation(request, config, CLIMATES)
+    custom = next(option for option in response.options if option.id == "custom")
+
+    assert custom.warnings == ["rice y rice: rice"]
+    assert {result.climate_risk for result in custom.scenarios.values()} <= {"medium", "high"}
+    assert response.current_practice.warnings == ["rice y rice: rice"]
+
+
+def test_family_rule_looks_at_the_restart_of_the_rotation() -> None:
+    crops = [
+        _crop("maize", [0.5, 1.0], "neutral", family="Poaceae"),
+        _crop("bean", [0.5, 0.9], "improves_a_lot", family="Fabaceae"),
+        _crop("rice", [1.0, 1.1, 1.2], "degrades", family="Poaceae"),
+    ]
+    config = parse_agro_config(
+        _config_dict(
+            crops=crops,
+            rotations=[{"id": "r1", "crop_ids": ["maize", "bean", "rice"]}],
+            restrictions=[],
+        )
+    )
+
+    warnings = rule_warnings(
+        date(2026, 12, 1),
+        [config.crop("maize"), config.crop("bean"), config.crop("rice")],
+        24,
+        config.content,
+    )
+
+    assert warnings == ["rice y maize: Poaceae"]
+
+
+def test_planting_outside_the_usual_months_warns() -> None:
+    crops = [
+        _crop("maize", [0.5, 1.0], "neutral", family="Poaceae", planting_months=[4, 5]),
+        _crop("bean", [0.5, 0.9], "improves_a_lot", family="Fabaceae", planting_months=[2]),
+    ]
+    config = parse_agro_config(
+        _config_dict(
+            crops=crops,
+            rotations=[{"id": "r1", "crop_ids": ["maize", "bean"]}],
+            restrictions=[],
+            defaults={"last_crop_id": "maize", "current_practice_campaigns": 1},
+        )
+    )
+
+    warnings = rule_warnings(
+        date(2026, 12, 1), [config.crop("maize"), config.crop("bean")], 4, config.content
+    )
+
+    assert warnings == ["maize en diciembre, no en abril o mayo"]
+
+
+def test_a_rotation_without_broken_rules_keeps_its_climate_risk() -> None:
+    config = parse_agro_config(_config_dict())
+    request = RecommendationRequest(**PILOT, planting_date=date(2026, 12, 1))
+
+    response = build_recommendation(request, config, CLIMATES)
+
+    assert all(option.warnings == [] for option in response.options)
+
+
+def test_packaged_config_rotations_never_repeat_a_family() -> None:
+    config = load_agro_config()
+    for rotation in config.rotations:
+        crops = [config.crop(crop_id) for crop_id in rotation.crop_ids]
+        pairs = zip(crops, crops[1:] + crops[:1], strict=True)
+        assert all(first.family != second.family for first, second in pairs), rotation.id

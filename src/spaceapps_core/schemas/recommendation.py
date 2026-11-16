@@ -194,6 +194,14 @@ class RotationOptionOut(_Strict):
     calendar: RotationCalendar
     long_term_plan: list[CampaignStep]
     scenarios: dict[ScenarioId, ScenarioResult]
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Agronomic rules the sequence breaks (same family in a row, planting "
+            "outside the usual months), in the farmer's words. Each one raises the "
+            "risk to at least medium."
+        ),
+    )
 
 
 class CurrentPracticeOut(_Strict):
@@ -206,6 +214,9 @@ class CurrentPracticeOut(_Strict):
     factsheet: OptionFactsheet
     repeat_warnings: dict[ScenarioId, str]
     scenarios: dict[ScenarioId, ScenarioResult]
+    warnings: list[str] = Field(
+        default_factory=list, description="Same as `RotationOptionOut.warnings`."
+    )
 
 
 class SoilProfile(_Strict):

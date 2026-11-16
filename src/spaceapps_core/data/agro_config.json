@@ -1,0 +1,253 @@
+{
+  "crops": [
+    {
+      "id": "rice",
+      "name": "Arroz",
+      "family": "Poaceae",
+      "planting_months": [12, 1, 2, 6, 7],
+      "kc_by_month": [1.05, 1.15, 1.2, 1.2, 0.75],
+      "soil_impact": "degrades",
+      "fixes_nitrogen": false,
+      "rationale": "Ya lo conoces y tiene mercado en el valle.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide el arroz en cada mes de su ciclo.",
+      "benefits": "Ya conoces el cultivo.",
+      "unknowns": "Depende de cuánta agua tenga Poechos este año.",
+      "risks": "Es el cultivo que más agua pide. Sembrarlo una y otra vez cansa la tierra.",
+      "planting_instructions": "Siembra el arroz cuando tengas confirmado tu turno de riego.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "FAO-56 (Allen et al., 1998), Tabla 12, arroz: Kc ini 1.05, med 1.20, fin 0.90-0.60. El reparto por mes y la duración de 5 meses son referenciales.",
+        "family": "Clasificación botánica: Oryza sativa, familia Poaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "No es leguminosa.",
+        "textos": "referencial"
+      }
+    },
+    {
+      "id": "maize",
+      "name": "Maíz amarillo duro",
+      "family": "Poaceae",
+      "planting_months": [4, 5, 6, 7, 8, 9, 10, 11, 12],
+      "kc_by_month": [0.3, 0.85, 1.2, 0.6],
+      "soil_impact": "neutral",
+      "fixes_nitrogen": false,
+      "rationale": "Pide menos agua que el arroz.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide el maíz en cada mes de su ciclo.",
+      "benefits": "Usa menos agua que el arroz.",
+      "unknowns": "El precio del maíz en la cosecha puede cambiar.",
+      "risks": "Confirma con tu técnico la variedad para tu zona.",
+      "planting_instructions": "Siembra el maíz en la fecha que elegiste y cosecha antes de los meses de más lluvia.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "FAO-56 (Allen et al., 1998), Tabla 12, maíz grano: Kc ini 0.30, med 1.20, fin 0.60-0.35. El reparto por mes y la duración de 4 meses son referenciales.",
+        "family": "Clasificación botánica: Zea mays, familia Poaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "No es leguminosa.",
+        "textos": "referencial"
+      }
+    },
+    {
+      "id": "cotton",
+      "name": "Algodón",
+      "family": "Malvaceae",
+      "planting_months": [1, 2, 3, 4],
+      "kc_by_month": [0.35, 0.6, 1.0, 1.18, 1.18, 0.6],
+      "soil_impact": "improves",
+      "fixes_nitrogen": false,
+      "rationale": "Es de otra familia que el arroz y el maíz, así que corta sus plagas.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide el algodón en cada mes de su ciclo.",
+      "benefits": "Su raíz profunda ayuda a la estructura de la tierra.",
+      "unknowns": "No sabemos si tienes comprador o desmotadora cerca.",
+      "risks": "Ocupa el campo más tiempo que los otros cultivos.",
+      "planting_instructions": "Siembra el algodón en la fecha que elegiste, si tienes comprador.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "FAO-56 (Allen et al., 1998), Tabla 12, algodón: Kc ini 0.35, med 1.15-1.20, fin 0.70-0.50. El reparto por mes y la duración de 6 meses son referenciales.",
+        "family": "Clasificación botánica: Gossypium, familia Malvaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "No es leguminosa.",
+        "textos": "referencial"
+      }
+    },
+    {
+      "id": "bean",
+      "name": "Frijol caupí",
+      "family": "Fabaceae",
+      "planting_months": [4, 5, 6, 7, 8, 9, 10],
+      "kc_by_month": [0.4, 1.05, 0.5],
+      "soil_impact": "improves_a_lot",
+      "fixes_nitrogen": true,
+      "rationale": "Es una menestra: le deja nitrógeno a la tierra para el cultivo que sigue.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide el frijol en cada mes de su ciclo.",
+      "benefits": "Es de ciclo corto y abona tu tierra.",
+      "unknowns": "Con lluvias muy fuertes puede rendir menos.",
+      "risks": "Confirma con tu técnico la semilla para tu zona.",
+      "planting_instructions": "Siembra el frijol en la fecha que elegiste.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "FAO-56 (Allen et al., 1998), Tabla 12, caupí: Kc ini 0.40, med 1.05, fin 0.60-0.35. El reparto por mes y la duración de 3 meses son referenciales.",
+        "family": "Clasificación botánica: Vigna unguiculata, familia Fabaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "Leguminosa (Fabaceae): fija nitrógeno del aire con bacterias de sus raíces.",
+        "textos": "referencial"
+      }
+    },
+    {
+      "id": "pulse",
+      "name": "Zarandaja",
+      "family": "Fabaceae",
+      "planting_months": [4, 5, 6, 7, 8],
+      "kc_by_month": [0.4, 0.8, 1.15, 1.15, 0.35],
+      "soil_impact": "improves_a_lot",
+      "fixes_nitrogen": true,
+      "rationale": "Es una menestra de la costa norte: le deja nitrógeno a la tierra.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide la zarandaja en cada mes de su ciclo.",
+      "benefits": "Abona tu tierra.",
+      "unknowns": "Su consumo de agua es aproximado.",
+      "risks": "Confirma con tu técnico la semilla para tu zona.",
+      "planting_instructions": "Siembra la zarandaja en la fecha que elegiste.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "referencial: FAO-56 no trae zarandaja; se usan los Kc de frijol seco de la Tabla 12 (ini 0.40, med 1.15, fin 0.35). Duración de 5 meses referencial.",
+        "family": "Clasificación botánica: Lablab purpureus, familia Fabaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "Leguminosa (Fabaceae): fija nitrógeno del aire con bacterias de sus raíces.",
+        "textos": "referencial"
+      }
+    },
+    {
+      "id": "sweet-potato",
+      "name": "Camote",
+      "family": "Convolvulaceae",
+      "planting_months": [3, 4, 5, 6, 7, 8, 9, 10, 11],
+      "kc_by_month": [0.5, 0.9, 1.15, 0.65],
+      "soil_impact": "neutral",
+      "fixes_nitrogen": false,
+      "rationale": "Es de otra familia que el arroz y el maíz, así que corta sus plagas.",
+      "evidence": "Su riego se calcula con la lluvia y la temperatura de NASA POWER para tu punto y con el agua que pide el camote en cada mes de su ciclo.",
+      "benefits": "Pide menos agua que el arroz.",
+      "unknowns": "No sabemos si tienes comprador cerca.",
+      "risks": "Confirma con tu técnico la variedad para tu zona.",
+      "planting_instructions": "Siembra el camote en la fecha que elegiste.",
+      "_example": true,
+      "_sources": {
+        "kc_by_month": "FAO-56 (Allen et al., 1998), Tabla 12, camote: Kc ini 0.50, med 1.15, fin 0.65. El reparto por mes y la duración de 4 meses son referenciales.",
+        "family": "Clasificación botánica: Ipomoea batatas, familia Convolvulaceae.",
+        "planting_months": "referencial",
+        "soil_impact": "referencial",
+        "fixes_nitrogen": "No es leguminosa.",
+        "textos": "referencial"
+      }
+    }
+  ],
+  "rotations": [
+    {"id": "r1", "crop_ids": ["maize", "bean", "sweet-potato"], "_sources": {"crop_ids": "referencial: ninguna familia se repite seguida, ni al volver a empezar"}},
+    {"id": "r2", "crop_ids": ["cotton", "pulse", "maize"], "_sources": {"crop_ids": "referencial: ninguna familia se repite seguida, ni al volver a empezar"}},
+    {"id": "r3", "crop_ids": ["bean", "sweet-potato", "maize"], "_sources": {"crop_ids": "referencial: ninguna familia se repite seguida, ni al volver a empezar"}}
+  ],
+  "soil_textures": [
+    {"id": "sandy", "name": "Arenosa", "description": "Se desarma en la mano y se siente como arena. El agua se va rápido."},
+    {"id": "loamy", "name": "Franca", "description": "Se hace bola húmeda pero se rompe sin esfuerzo. Guarda bien el agua."},
+    {"id": "clayey", "name": "Arcillosa", "description": "Se pega en la mano y se parte en terrones duros al secarse. Se encharca."}
+  ],
+  "scenarios": {
+    "heavy_rains": [1983, 1998, 2017],
+    "normal": [2004, 2013, 2016],
+    "dry": [2005, 2006, 2007],
+    "_sources": {
+      "heavy_rains": "Años de El Niño costero con lluvias extremas en Piura (1983, 1998, 2017). En NASA POWER (Sullana, -4.90, -80.68) suman 386, 1350 y 663 mm al año, frente a una mediana de 118 mm en 1991-2020.",
+      "normal": "NASA POWER mensual PRECTOTCORR en Sullana (-4.90, -80.68): los 3 años de 1991-2020 (sin los de lluvias fuertes) más cercanos a la mediana de 118 mm/año.",
+      "dry": "NASA POWER mensual PRECTOTCORR en Sullana (-4.90, -80.68): los 3 años con menos lluvia de 1991-2020 (32, 58 y 36 mm)."
+    }
+  },
+  "thresholds": {
+    "risk_month_rain_mm": 150.0,
+    "effective_rain_fraction": 0.8,
+    "low_water_m3_per_ha": 9000.0,
+    "climate_risk_medium_months": 1,
+    "climate_risk_high_months": 2,
+    "soil_baseline_score": 2,
+    "soil_campaigns_before_penalty": 1,
+    "soil_horizon_months": 24,
+    "decision_lead_days": 15,
+    "sandy_sand_percent": 70.0,
+    "clayey_clay_percent": 35.0,
+    "effective_rain_fraction_by_texture": {"sandy": 0.6, "loamy": 0.8, "clayey": 0.75},
+    "soil_organic_carbon_low_g_kg": 10.0,
+    "soil_organic_carbon_high_g_kg": 20.0,
+    "soil_vegetation_decline_penalty": 1,
+    "vegetation_trend_years": 5,
+    "vegetation_flat_tolerance": 0.05,
+    "vegetation_season_start_month": 1,
+    "vegetation_season_end_month": 4,
+    "max_custom_rotation_crops": 4,
+    "crop_water_need_medium_index": 2.5,
+    "crop_water_need_high_index": 4.0,
+    "observation_window_months": 3,
+    "soil_moisture_dry_m3_m3": 0.12,
+    "soil_moisture_wet_m3_m3": 0.25,
+    "_example": true,
+    "_sources": {
+      "todos": "referencial: umbrales del equipo, sin calibrar con datos de campo del Chira."
+    }
+  },
+  "priorities": [
+    {"id": "lower-climate-risk", "name": "Menos riesgo de clima", "phrase": "tener menos riesgo de clima", "criterion": "least_climate_risk"},
+    {"id": "save-water", "name": "Cuidar mi agua", "phrase": "cuidar tu agua", "criterion": "least_water"},
+    {"id": "restore-soil", "name": "Recuperar mi tierra", "phrase": "recuperar tu tierra", "criterion": "most_soil_improvement"}
+  ],
+  "restrictions": [
+    {"id": "no-cotton-buyer", "name": "No tengo comprador para algodón", "excludes_crop_ids": ["cotton"]},
+    {"id": "low-water", "name": "Tendré poca agua", "excludes_crop_ids": [], "excludes_high_water_use": true}
+  ],
+  "defaults": {"last_crop_id": "rice", "current_practice_campaigns": 3},
+  "content": {
+    "irrigation_source": "Poechos",
+    "soil_texture_question": "¿A cuál de estas se parece tu tierra?",
+    "scenario_notes": {"heavy_rains": "Con lluvias fuertes, ", "normal": "En un año normal, ", "dry": "En un año seco, "},
+    "repeat_warnings": {
+      "heavy_rains": "Si repites el mismo cultivo, tu tierra se sigue cansando y con lluvias fuertes el riesgo crece.",
+      "normal": "Si repites el mismo cultivo, tu tierra se sigue cansando y llegan más plagas.",
+      "dry": "Si repites el mismo cultivo, tu tierra se sigue cansando y en un año seco puede faltarte agua."
+    },
+    "soil_findings": ["Lleva {campaigns} campañas seguidas de {crop}."],
+    "same_family_warning": "{first} y {second} son de la misma familia de plantas. Sembrarlas seguidas cansa la tierra y deja más plagas: prueba poner una menestra entre ellas.",
+    "planting_month_warning": "Con esta secuencia, {crop} se sembraría en {month}, pero en la zona se suele sembrar en {months}. Conversa la fecha con tu técnico.",
+    "soil_texture_findings": {
+      "sandy": "Según los mapas de suelo, tu tierra es arenosa ({sand}% de arena).",
+      "loamy": "Según los mapas de suelo, tu tierra es franca ({sand}% de arena y {clay}% de arcilla).",
+      "clayey": "Según los mapas de suelo, tu tierra es arcillosa ({clay}% de arcilla)."
+    },
+    "soil_reported_texture_findings": {
+      "sandy": "Nos dijiste que tu tierra es arenosa.",
+      "loamy": "Nos dijiste que tu tierra es franca.",
+      "clayey": "Nos dijiste que tu tierra es arcillosa."
+    },
+    "soil_moisture_findings": {
+      "dry": "El satélite midió tu tierra seca en los últimos {days} días.",
+      "normal": "El satélite midió tu tierra con humedad normal en los últimos {days} días.",
+      "wet": "El satélite midió tu tierra muy húmeda en los últimos {days} días."
+    },
+    "recent_rain_findings": {
+      "heavy_rains": "El satélite midió {total} mm de lluvia en tu chacra en los últimos {days} días: va como un año de lluvias fuertes.",
+      "normal": "El satélite midió {total} mm de lluvia en tu chacra en los últimos {days} días: va como un año normal.",
+      "dry": "El satélite midió {total} mm de lluvia en tu chacra en los últimos {days} días: va como un año seco."
+    },
+    "soil_carbon_findings": {
+      "low": "Según los mapas de suelo, tu tierra tiene poca materia orgánica ({carbon} g/kg).",
+      "normal": "Según los mapas de suelo, tu tierra tiene materia orgánica media ({carbon} g/kg).",
+      "high": "Según los mapas de suelo, tu tierra tiene buena materia orgánica ({carbon} g/kg)."
+    },
+    "vegetation_findings": {
+      "down": "El satélite vio que el verdor de tu chacra bajó {percent} entre {start_year} y {end_year}.",
+      "flat": "El satélite vio que el verdor de tu chacra se mantuvo entre {start_year} y {end_year}.",
+      "up": "El satélite vio que el verdor de tu chacra subió {percent} entre {start_year} y {end_year}."
+    },
+    "_sources": {"todos": "Textos del equipo. Las cifras entre llaves salen de SoilGrids, MODIS, SMAP e IMERG en el momento de la consulta."}
+  }
+}

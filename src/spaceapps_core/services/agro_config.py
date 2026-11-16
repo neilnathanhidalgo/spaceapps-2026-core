@@ -43,6 +43,14 @@ class _Block(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     is_example: bool = Field(default=False, alias="_example")
+    sources: dict[str, str] = Field(
+        default_factory=dict,
+        alias="_sources",
+        description=(
+            "Where each value of the block comes from, by field name. "
+            '"referencial" marks a value without a citable source.'
+        ),
+    )
 
 
 class CropConfig(_Block):
@@ -54,6 +62,16 @@ class CropConfig(_Block):
         description="One crop coefficient per month of the cycle; its length is the duration.",
     )
     soil_impact: SoilImpactKind
+    family: str = Field(
+        ...,
+        min_length=1,
+        description="Botanical family; two crops of the same family must not follow each other.",
+    )
+    planting_months: list[int] = Field(
+        ...,
+        min_length=1,
+        description="Months of the year (1-12) in which the crop is usually planted.",
+    )
     fixes_nitrogen: bool = Field(
         default=False,
         description=(
@@ -67,6 +85,12 @@ class CropConfig(_Block):
     unknowns: str
     risks: str
     planting_instructions: str
+
+    @model_validator(mode="after")
+    def _check_planting_months(self) -> Self:
+        if any(not 1 <= month <= 12 for month in self.planting_months):
+            raise ValueError(f"`crops.{self.id}.planting_months` must be months 1-12.")
+        return self
 
     @property
     def cycle_months(self) -> int:
@@ -267,6 +291,17 @@ class ContentConfig(_Block):
     repeat_warnings: dict[ScenarioId, str]
     soil_findings: list[str] = Field(
         ..., description="Templates; `{campaigns}` and `{crop}` are filled in."
+    )
+    same_family_warning: str = Field(
+        default=(
+            "{first} y {second} son de la misma familia de plantas: sembrarlas "
+            "seguidas cansa la tierra y deja más plagas."
+        ),
+        description="Two crops of one family in a row; `{first}`, `{second}`, `{family}`.",
+    )
+    planting_month_warning: str = Field(
+        default="{crop} se sembraría en {month}; en la zona se suele sembrar en {months}.",
+        description="A crop planted outside its months; `{crop}`, `{month}`, `{months}`.",
     )
     soil_texture_findings: dict[SoilTexture, str] = Field(
         default_factory=dict,

@@ -28,6 +28,7 @@ from calendar import monthrange
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 
 from ..clients.power import PowerClient
 from ..core.errors import InvalidRequestError, UpstreamError
@@ -62,6 +63,7 @@ from ..schemas.recommendation import (
 from ..schemas.variables import CanonicalVariable
 from .agro_config import (
     AgroConfig,
+    ContentConfig,
     CropConfig,
     PriorityConfig,
     RestrictionConfig,
@@ -97,6 +99,21 @@ MM_PER_HA_TO_M3 = 10.0
 MID_MONTH_DAY = 15
 SOIL_CONDITIONS: tuple[SoilConditionLevel, ...] = ("very_tired", "tired", "regular", "good")
 FACTSHEET_SECTIONS = ("rationale", "evidence", "benefits", "unknowns", "risks")
+MONTH_NAMES = (
+    "enero",
+    "febrero",
+    "marzo",
+    "abril",
+    "mayo",
+    "junio",
+    "julio",
+    "agosto",
+    "setiembre",
+    "octubre",
+    "noviembre",
+    "diciembre",
+)
+RISK_ORDER: tuple[ClimateRiskLevel, ...] = ("low", "medium", "high")
 
 
 @dataclass(frozen=True)
@@ -345,6 +362,60 @@ def long_term_plan(
     return steps
 
 
+def rule_warnings(
+    planting_date: date,
+    crops: Sequence[CropConfig],
+    horizon_months: int,
+    content: ContentConfig,
+) -> list[str]:
+    """Agronomic rules the rotation breaks within the horizon.
+
+    1. Two crops of the same botanical family must not follow each other
+       (the rotation repeats, so the last crop is followed by the first).
+    2. Each crop must start in one of its usual planting months.
+    """
+    sequence = repeated_crops(crops, horizon_months)
+    warnings: list[str] = []
+    for first, second in pairwise(sequence):
+        if first.family == second.family:
+            warnings.append(
+                fill_template(
+                    content.same_family_warning,
+                    first=first.name.lower(),
+                    second=second.name.lower(),
+                    family=first.family,
+                )
+            )
+    for window in crop_windows(planting_date, sequence):
+        if window.start.month not in window.crop.planting_months:
+            warnings.append(
+                fill_template(
+                    content.planting_month_warning,
+                    crop=window.crop.name.lower(),
+                    month=MONTH_NAMES[window.start.month - 1],
+                    months=_month_list(window.crop.planting_months),
+                )
+            )
+    return list(dict.fromkeys(warnings))
+
+
+def with_rule_risk(
+    results: dict[ScenarioId, ScenarioResult],
+    warnings: Sequence[str],
+) -> dict[ScenarioId, ScenarioResult]:
+    """A sequence that breaks a rule is never "low" risk."""
+    if not warnings:
+        return results
+    return {
+        scenario: (
+            result.model_copy(update={"climate_risk": "medium"})
+            if RISK_ORDER.index(result.climate_risk) < RISK_ORDER.index("medium")
+            else result
+        )
+        for scenario, result in results.items()
+    }
+
+
 def soil_impact_of(crops: Sequence[CropConfig]) -> tuple[SoilImpactKind, int]:
     """Combined soil impact of a rotation, and its score."""
     score = sum(crop.soil_score for crop in crops)
@@ -464,7 +535,10 @@ def build_recommendation(
         plan = long_term_plan(
             request.planting_date, crops, soil_now, thresholds.soil_horizon_months
         )
-        by_scenario = results(windows)
+        warnings = rule_warnings(
+            request.planting_date, crops, thresholds.soil_horizon_months, config.content
+        )
+        by_scenario = with_rule_risk(results(windows), warnings)
         options.append(
             RotationOptionOut(
                 id=rotation_id,
@@ -478,6 +552,7 @@ def build_recommendation(
                 calendar=_calendar(request.planting_date, windows, crops, thresholds),
                 long_term_plan=plan,
                 scenarios=by_scenario,
+                warnings=warnings,
             )
         )
 
@@ -485,6 +560,9 @@ def build_recommendation(
     baseline_windows = crop_windows(request.planting_date, baseline_crops)
     baseline_plan = long_term_plan(
         request.planting_date, [last_crop], soil_now, thresholds.soil_horizon_months
+    )
+    baseline_warnings = rule_warnings(
+        request.planting_date, [last_crop], thresholds.soil_horizon_months, config.content
     )
     current_practice = CurrentPracticeOut(
         crop_ids=[crop.id for crop in baseline_crops],
@@ -495,7 +573,8 @@ def build_recommendation(
         ),
         factsheet=factsheet_of([last_crop]),
         repeat_warnings=dict(config.content.repeat_warnings),
-        scenarios=results(baseline_windows),
+        scenarios=with_rule_risk(results(baseline_windows), baseline_warnings),
+        warnings=baseline_warnings,
     )
 
     horizon = max([option.cycle_months for option in options] + [current_practice.cycle_months])
@@ -848,6 +927,11 @@ def _crop_or_400(config: AgroConfig, crop_id: str) -> CropConfig:
 
 def _mid_month_day_of_year(month: int) -> int:
     return date(2001, month, MID_MONTH_DAY).timetuple().tm_yday
+
+
+def _month_list(months: Sequence[int]) -> str:
+    names = [MONTH_NAMES[month - 1] for month in sorted(set(months))]
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} o {names[-1]}"
 
 
 def _mean(values: Sequence[float]) -> float:
