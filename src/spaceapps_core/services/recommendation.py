@@ -386,8 +386,13 @@ def rule_warnings(
                     family=first.family,
                 )
             )
+    flagged: set[str] = set()
     for window in crop_windows(planting_date, sequence):
+        # Una advertencia por cultivo: la primera vez que cae fuera de sus meses.
+        if window.crop.id in flagged:
+            continue
         if window.start.month not in window.crop.planting_months:
+            flagged.add(window.crop.id)
             warnings.append(
                 fill_template(
                     content.planting_month_warning,
