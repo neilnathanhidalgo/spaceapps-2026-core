@@ -384,7 +384,7 @@ def rule_warnings(
             warnings.append(
                 fill_template(
                     content.same_family_warning,
-                    first=first.name.lower(),
+                    first=first.name,
                     second=second.name.lower(),
                     family=first.family,
                 )

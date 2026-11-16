@@ -861,9 +861,9 @@ def test_same_family_in_a_row_warns_and_is_never_low_risk() -> None:
     response = build_recommendation(request, config, CLIMATES)
     custom = next(option for option in response.options if option.id == "custom")
 
-    assert custom.warnings == ["rice y rice: rice"]
+    assert custom.warnings == ["Rice y rice: rice"]
     assert {result.climate_risk for result in custom.scenarios.values()} <= {"medium", "high"}
-    assert response.current_practice.warnings == ["rice y rice: rice"]
+    assert response.current_practice.warnings == ["Rice y rice: rice"]
 
 
 def test_family_rule_looks_at_the_restart_of_the_rotation() -> None:
@@ -887,7 +887,7 @@ def test_family_rule_looks_at_the_restart_of_the_rotation() -> None:
         config.content,
     )
 
-    assert warnings == ["rice y maize: Poaceae"]
+    assert warnings == ["Rice y maize: Poaceae"]
 
 
 def test_planting_outside_the_usual_months_warns() -> None:
