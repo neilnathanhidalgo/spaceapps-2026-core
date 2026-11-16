@@ -216,6 +216,7 @@
       "dry": "Si repites el mismo cultivo, tu tierra se sigue cansando y en un año seco puede faltarte agua."
     },
     "soil_findings": ["Lleva {campaigns} campañas seguidas de {crop}."],
+    "soil_findings_single_campaign": ["La última campaña fue de {crop}."],
     "same_family_warning": "{first} y {second} son de la misma familia de plantas. Sembrarlas seguidas cansa la tierra y deja más plagas: prueba poner una menestra entre ellas.",
     "planting_month_warning": "Con esta secuencia, {crop} se sembraría en {month}, pero en la zona se suele sembrar en {months}. Conversa la fecha con tu técnico.",
     "soil_texture_findings": {

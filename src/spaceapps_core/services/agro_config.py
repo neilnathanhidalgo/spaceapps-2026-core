@@ -292,6 +292,10 @@ class ContentConfig(_Block):
     soil_findings: list[str] = Field(
         ..., description="Templates; `{campaigns}` and `{crop}` are filled in."
     )
+    soil_findings_single_campaign: list[str] = Field(
+        default_factory=lambda: ["La última campaña fue de {crop}."],
+        description="Same as `soil_findings` when the crop was planted only once in a row.",
+    )
     same_family_warning: str = Field(
         default=(
             "{first} y {second} son de la misma familia de plantas: sembrarlas "

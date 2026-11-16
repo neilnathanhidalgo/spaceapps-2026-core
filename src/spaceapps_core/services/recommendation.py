@@ -777,7 +777,11 @@ def _soil_findings(
             campaigns=request.consecutive_campaigns,
             crop=last_crop.name.lower(),
         )
-        for template in content.soil_findings
+        for template in (
+            content.soil_findings_single_campaign
+            if request.consecutive_campaigns == 1
+            else content.soil_findings
+        )
     ]
     if texture is not None and texture_source == "farmer":
         reported = content.soil_reported_texture_findings.get(texture)

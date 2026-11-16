@@ -926,3 +926,16 @@ def test_packaged_config_rotations_never_repeat_a_family() -> None:
         crops = [config.crop(crop_id) for crop_id in rotation.crop_ids]
         pairs = zip(crops, crops[1:] + crops[:1], strict=True)
         assert all(first.family != second.family for first, second in pairs), rotation.id
+
+
+def test_one_campaign_is_said_in_singular() -> None:
+    config = parse_agro_config(_config_dict())
+    once = RecommendationRequest(**PILOT, planting_date=date(2026, 12, 1), consecutive_campaigns=1)
+    three = RecommendationRequest(**PILOT, planting_date=date(2026, 12, 1), consecutive_campaigns=3)
+
+    assert build_recommendation(once, config, CLIMATES).soil_health.findings[0] == (
+        "La última campaña fue de rice."
+    )
+    assert build_recommendation(three, config, CLIMATES).soil_health.findings[0] == (
+        "Lleva 3 campañas seguidas de rice."
+    )
