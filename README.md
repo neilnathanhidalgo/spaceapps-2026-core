@@ -301,8 +301,29 @@ from those numbers. With `low`, options that include a high-water crop rank
 after the others in every priority. The rule is fixed in
 `services/water_availability.py`.
 
-Would it have warned about the water shortage of early 2025? Run it with
-data only up to October 2024 for a rice plot of the Chira valley:
+A second indicator, `irrigation_water`, approximates the water that
+reaches the valley through irrigation. The Chira is irrigated from Poechos,
+which fills with the river born in the upper Chira-Catamayo basin, so it
+looks at the rain of the last rainy season (December to April) at four NASA
+POWER points of that basin, against the same season of the previous 10
+years, with the same tercile rule. **It is an approximation with rain, not
+the real level of the reservoir**; `note` says so and the app shows it.
+
+| Point | Lat, lon | Why |
+|---|---|---|
+| Ayabaca (Peru) | -4.64, -79.72 | Upper basin on the Peruvian side; same POWER cell as Macará and Sozoranga |
+| Pacaipampa (Peru) | -4.99, -79.67 | Headwaters of the Quiroz, a Chira tributary above Poechos |
+| Cariamanga (Ecuador) | -4.33, -79.55 | Calvas river, which joins the Macará and then the Chira |
+| Catamayo (Ecuador) | -3.99, -79.36 | Headwaters of the Catamayo (the Chira's name in Ecuador); same cell as Gonzanamá |
+
+The four points are four different POWER cells (0.5 x 0.625 degrees). They
+were chosen from the location of those rivers and should be checked against
+an official basin map. The ranking uses the less favourable of the two
+indicators: with either one `low`, options with a high-water crop go last.
+
+Would it have warned about the water shortage of early 2025? Run both
+indicators with data only up to October 2024 for a rice plot of the Chira
+valley:
 
 ```bash
 .venv/bin/python scripts/validate_drought_2024.py           # Marcavelica, as of 2024-11-01

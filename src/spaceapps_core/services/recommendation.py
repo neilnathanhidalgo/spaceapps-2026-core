@@ -41,6 +41,7 @@ from ..schemas.recommendation import (
     ClimateRiskLevel,
     CropPeriod,
     CurrentPracticeOut,
+    IrrigationWater,
     MonthClimate,
     MonthWater,
     OptionFactsheet,
@@ -75,6 +76,7 @@ from .agro_config import (
 )
 from .app_catalog import catalog_crop, crop_water_need
 from .et0 import reference_et0
+from .irrigation_water import fetch_irrigation_water
 from .local_soil import (
     carbon_score_shift,
     effective_rain_fraction,
@@ -507,6 +509,7 @@ def build_recommendation(
     soil_moisture: SoilMoistureState | None = None,
     recent_rain: ObservedRain | None = None,
     water: WaterAvailability | None = None,
+    irrigation: IrrigationWater | None = None,
 ) -> RecommendationResponse:
     """Build the whole response. Pure: no network, no FastAPI.
 
@@ -620,7 +623,7 @@ def build_recommendation(
                 scenario: rank_options(
                     _ranking_inputs(options, scenario, config),
                     catalog_priority.criterion,
-                    water_low=water is not None and water.level == "low",
+                    water_low=least_water_level(water, irrigation) == "low",
                 )
                 for scenario in SCENARIO_IDS
             }
@@ -681,6 +684,7 @@ def build_recommendation(
             },
         ),
         water_availability=water,
+        irrigation_water=irrigation,
         data_sources=_data_sources(soil, vegetation, soil_moisture, recent_rain, texture_source),
         example_parameters=config.example_parameters,
         generated_at=datetime.utcnow(),
@@ -700,10 +704,11 @@ async def recommend(request: RecommendationRequest) -> RecommendationResponse:
     _custom_rotation_or_400(config, request.custom_rotation)
     location = Location(lat=request.lat, lon=request.lon)
 
-    climates, soil, water = await asyncio.gather(
+    climates, soil, water, irrigation = await asyncio.gather(
         fetch_scenario_climates(location, config.scenarios),
         fetch_soil_profile(location, config.thresholds),
         _water_or_none(location),
+        _irrigation_or_none(),
     )
     thresholds = config.thresholds
     # Lo que tarda minutos no se espera: se usa lo que ya está en caché y el
@@ -723,7 +728,25 @@ async def recommend(request: RecommendationRequest) -> RecommendationResponse:
         soil_moisture=cached_soil_moisture(location, thresholds),
         recent_rain=cached_recent_rain(location, thresholds),
         water=water,
+        irrigation=irrigation,
     )
+
+
+def least_water_level(
+    water: WaterAvailability | None,
+    irrigation: IrrigationWater | None,
+) -> str | None:
+    """The less favourable of the two water indicators (`None` if neither)."""
+    levels = [item.level for item in (water, irrigation) if item is not None]
+    return min(levels, key=("low", "medium", "high").index) if levels else None
+
+
+async def _irrigation_or_none() -> IrrigationWater | None:
+    """Fail-soft, like the local indicator."""
+    try:
+        return await fetch_irrigation_water(date.today())
+    except UpstreamError:
+        return None
 
 
 async def _water_or_none(location: Location) -> WaterAvailability | None:

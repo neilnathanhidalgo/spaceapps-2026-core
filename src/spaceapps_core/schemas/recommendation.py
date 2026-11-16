@@ -229,6 +229,41 @@ class WaterAvailability(_Strict):
     source: str = "nasa_power"
 
 
+class BasinPoint(_Strict):
+    """One NASA POWER point of the upper Chira-Catamayo basin."""
+
+    name: str
+    lat: float
+    lon: float
+    rain_mm: float
+    rain_normal_mm: float
+
+
+class IrrigationWater(_Strict):
+    """Water that reaches the valley through irrigation, approximated with rain.
+
+    Rain of the last rainy season (December-April) in the upper Chira-Catamayo
+    basin, where the river that fills Poechos is born, against the same season
+    of the previous years. It is an approximation with rain, not the real level
+    of the reservoir.
+    """
+
+    level: WaterLevel
+    season_start: date
+    season_end: date
+    rain_mm: float = Field(..., description="Mean season total over the basin points.")
+    rain_normal_mm: float
+    percent_vs_normal: float = Field(..., description="(rain / normal - 1) x 100.")
+    rain_percentile: float = Field(..., ge=0, le=100)
+    reference_seasons: list[int] = Field(..., description="Year the reference seasons end.")
+    points: list[BasinPoint]
+    finding: str
+    note: str = Field(
+        ..., description="Always says it is an approximation with rain, not the reservoir."
+    )
+    source: str = "nasa_power"
+
+
 class CurrentPracticeOut(_Strict):
     """Repeating the last crop, as the comparison baseline."""
 
@@ -371,6 +406,14 @@ class RecommendationResponse(_Strict):
     scenario_notes: dict[ScenarioId, str]
     irrigation_source: str
     climate_basis: ClimateBasis
+    irrigation_water: IrrigationWater | None = Field(
+        default=None,
+        description=(
+            "Rain of the last rainy season in the upper basin (NASA POWER), as an "
+            "approximation of the water that arrives through irrigation. The ranking "
+            "uses the less favourable of this and `water_availability`."
+        ),
+    )
     water_availability: WaterAvailability | None = Field(
         default=None,
         description=(
