@@ -204,6 +204,31 @@ class RotationOptionOut(_Strict):
     )
 
 
+WaterLevel = Literal["low", "medium", "high"]
+
+
+class WaterAvailability(_Strict):
+    """Water available at the point: recent months against the same months of past years.
+
+    Rain (PRECTOTCORR) and root-zone wetness (GWETROOT) from NASA POWER. Each
+    is ranked against the same calendar window of the previous years; the
+    level is the tercile of the mean of both percentile ranks.
+    """
+
+    level: WaterLevel
+    window_start: date = Field(..., description="First day of the observed window.")
+    window_end: date = Field(..., description="Last day of the observed window.")
+    rain_mm: float
+    rain_normal_mm: float = Field(..., description="Mean of the same window in the past years.")
+    rain_percentile: float = Field(..., ge=0, le=100)
+    root_wetness: float = Field(..., description="Mean GWETROOT of the window, 0-1.")
+    root_wetness_normal: float
+    root_wetness_percentile: float = Field(..., ge=0, le=100)
+    reference_years: list[int]
+    finding: str = Field(..., description="Plain-language sentence built from the numbers.")
+    source: str = "nasa_power"
+
+
 class CurrentPracticeOut(_Strict):
     """Repeating the last crop, as the comparison baseline."""
 
@@ -346,6 +371,14 @@ class RecommendationResponse(_Strict):
     scenario_notes: dict[ScenarioId, str]
     irrigation_source: str
     climate_basis: ClimateBasis
+    water_availability: WaterAvailability | None = Field(
+        default=None,
+        description=(
+            "Water available at the point (NASA POWER). With `low`, options with a "
+            "high-water crop rank after the others in every priority. Null if POWER "
+            "lacks the data."
+        ),
+    )
     data_sources: list[str] = Field(..., description="Upstreams that actually fed this response.")
     example_parameters: bool
     generated_at: datetime

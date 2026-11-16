@@ -290,6 +290,48 @@ try other values. `services/observations.py` decides the window the satellite
 observations cover: complete calendar months ending with last month, so it only
 moves once a month and every farmer on the point shares the same cache entry.
 
+### Water availability and the 2024-2025 drought check
+
+Every recommendation carries `water_availability`: total rain (PRECTOTCORR)
+and mean root-zone wetness (GWETROOT) of the last 6 complete months at the
+point, from NASA POWER, each ranked against the same months of the previous
+10 years. The level is the tercile of the mean of both percentile ranks
+(`low` / `medium` / `high`); `finding` is the sentence the app shows, built
+from those numbers. With `low`, options that include a high-water crop rank
+after the others in every priority. The rule is fixed in
+`services/water_availability.py`.
+
+Would it have warned about the water shortage of early 2025? Run it with
+data only up to October 2024 for a rice plot of the Chira valley:
+
+```bash
+.venv/bin/python scripts/validate_drought_2024.py           # Marcavelica, as of 2024-11-01
+.venv/bin/python scripts/validate_drought_2024.py --lat -4.88 --lon -81.02
+```
+
+It prints the indicator, the ranking with and without it, and a three-line
+summary. NASA POWER cells are about 0.5 x 0.625 degrees (Sullana and the old
+Medio Piura pilot fall in the same cell), so it describes the zone, not the
+plot.
+
+### Agronomic parameters and demo plots
+
+`src/spaceapps_core/data/agro_config.json` is versioned. Each block lists in
+`_sources` where its values come from; values without a citable source are
+marked `referencial` and their block `_example: true`, so
+`example_parameters` stays `true` in the response. Two rules apply to every
+sequence: no two crops of the same botanical family in a row, and each crop
+starts in one of its `planting_months`; a sequence that breaks them gets
+`warnings` and never a `low` risk.
+
+Before a demo, warm the two Chira demo plots (Marcavelica and Amotape) so
+they answer even if an upstream fails (the endpoints then serve the last
+real answer for that request, flagged `X-Served-From: last-good`):
+
+```bash
+.venv/bin/python scripts/warm_demo_farms.py
+```
+
 ## Caching
 
 Every client goes through a shared `diskcache` store (`.cache/` by default).

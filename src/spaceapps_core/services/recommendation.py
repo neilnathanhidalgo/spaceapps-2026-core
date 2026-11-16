@@ -59,6 +59,7 @@ from ..schemas.recommendation import (
     SoilTexture,
     SoilTextureSource,
     VegetationTrend,
+    WaterAvailability,
 )
 from ..schemas.variables import CanonicalVariable
 from .agro_config import (
@@ -72,7 +73,7 @@ from .agro_config import (
     fill_template,
     load_agro_config,
 )
-from .app_catalog import catalog_crop
+from .app_catalog import catalog_crop, crop_water_need
 from .et0 import reference_et0
 from .local_soil import (
     carbon_score_shift,
@@ -89,6 +90,7 @@ from .recent_rain import (
 )
 from .soil_moisture import cached_soil_moisture
 from .vegetation import cached_vegetation_trend
+from .water_availability import fetch_water_availability
 
 CLIMATE_VARIABLES = [
     CanonicalVariable.PRECIPITATION,
@@ -153,6 +155,7 @@ class RankingInput:
     irrigation_m3: float
     risk_month_count: int
     soil_impact_score: int
+    has_high_water_crop: bool = False
 
 
 def average_monthly_weather(series: Iterable[TimeSeries], years: Sequence[int]) -> ScenarioClimate:
@@ -436,8 +439,17 @@ def soil_impact_of(crops: Sequence[CropConfig]) -> tuple[SoilImpactKind, int]:
     return "improves_a_lot", score
 
 
-def rank_options(inputs: Sequence[RankingInput], criterion: RankingCriterion) -> list[str]:
-    """Option ids from best to worst for a priority. Ties keep the input order."""
+def rank_options(
+    inputs: Sequence[RankingInput],
+    criterion: RankingCriterion,
+    *,
+    water_low: bool = False,
+) -> list[str]:
+    """Option ids from best to worst for a priority. Ties keep the input order.
+
+    With little water available (`water_low`), options that include a
+    high-water crop go after the others, whatever the priority.
+    """
     keys = {
         "least_water": lambda option: (option.irrigation_m3,),
         "most_soil_improvement": lambda option: (
@@ -446,7 +458,14 @@ def rank_options(inputs: Sequence[RankingInput], criterion: RankingCriterion) ->
         ),
         "least_climate_risk": lambda option: (option.risk_month_count, option.irrigation_m3),
     }
-    return [option.option_id for option in sorted(inputs, key=keys[criterion])]
+    key = keys[criterion]
+    return [
+        option.option_id
+        for option in sorted(
+            inputs,
+            key=lambda option: ((water_low and option.has_high_water_crop), *key(option)),
+        )
+    ]
 
 
 def factsheet_of(crops: Sequence[CropConfig]) -> OptionFactsheet:
@@ -487,6 +506,7 @@ def build_recommendation(
     vegetation: VegetationTrend | None = None,
     soil_moisture: SoilMoistureState | None = None,
     recent_rain: ObservedRain | None = None,
+    water: WaterAvailability | None = None,
 ) -> RecommendationResponse:
     """Build the whole response. Pure: no network, no FastAPI.
 
@@ -598,7 +618,9 @@ def build_recommendation(
         ranking={
             catalog_priority.id: {
                 scenario: rank_options(
-                    _ranking_inputs(options, scenario), catalog_priority.criterion
+                    _ranking_inputs(options, scenario, config),
+                    catalog_priority.criterion,
+                    water_low=water is not None and water.level == "low",
                 )
                 for scenario in SCENARIO_IDS
             }
@@ -658,6 +680,7 @@ def build_recommendation(
                 for scenario in SCENARIO_IDS
             },
         ),
+        water_availability=water,
         data_sources=_data_sources(soil, vegetation, soil_moisture, recent_rain, texture_source),
         example_parameters=config.example_parameters,
         generated_at=datetime.utcnow(),
@@ -677,9 +700,10 @@ async def recommend(request: RecommendationRequest) -> RecommendationResponse:
     _custom_rotation_or_400(config, request.custom_rotation)
     location = Location(lat=request.lat, lon=request.lon)
 
-    climates, soil = await asyncio.gather(
+    climates, soil, water = await asyncio.gather(
         fetch_scenario_climates(location, config.scenarios),
         fetch_soil_profile(location, config.thresholds),
+        _water_or_none(location),
     )
     thresholds = config.thresholds
     # Lo que tarda minutos no se espera: se usa lo que ya está en caché y el
@@ -698,7 +722,16 @@ async def recommend(request: RecommendationRequest) -> RecommendationResponse:
         vegetation=vegetation,
         soil_moisture=cached_soil_moisture(location, thresholds),
         recent_rain=cached_recent_rain(location, thresholds),
+        water=water,
     )
+
+
+async def _water_or_none(location: Location) -> WaterAvailability | None:
+    """The water indicator is fail-soft: without it the ranking is the usual one."""
+    try:
+        return await fetch_water_availability(location, date.today())
+    except UpstreamError:
+        return None
 
 
 async def fetch_scenario_climates(
@@ -841,6 +874,7 @@ def _custom_rotation_or_400(
 def _ranking_inputs(
     options: Sequence[RotationOptionOut],
     scenario: ScenarioId,
+    config: AgroConfig,
 ) -> list[RankingInput]:
     return [
         RankingInput(
@@ -848,6 +882,10 @@ def _ranking_inputs(
             irrigation_m3=option.scenarios[scenario].irrigation_m3,
             risk_month_count=option.scenarios[scenario].risk_month_count,
             soil_impact_score=option.soil_impact_score,
+            has_high_water_crop=any(
+                crop_water_need(config.crop(crop_id), config.thresholds) == "high"
+                for crop_id in option.crop_ids
+            ),
         )
         for option in options
     ]

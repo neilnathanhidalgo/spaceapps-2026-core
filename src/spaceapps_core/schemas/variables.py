@@ -17,6 +17,7 @@ class CanonicalVariable(StrEnum):
     EVI = "evi"
     SOIL_MOISTURE = "soil_moisture"
     SOIL_WETNESS = "soil_wetness"
+    ROOT_ZONE_WETNESS = "root_zone_wetness"
     PRECIPITATION_PROBABILITY = "precipitation_probability"
     WEATHER_CODE = "weather_code"
     EVAPORATIVE_STRESS_INDEX = "evaporative_stress_index"
@@ -126,6 +127,12 @@ CANONICAL_VARIABLES: dict[CanonicalVariable, VariableSpec] = {
         unit="fraction",
         description="Surface soil wetness (0 = dry, 1 = saturated), MERRA-2 via POWER.",
         source_aliases={"power": "GWETTOP"},
+    ),
+    CanonicalVariable.ROOT_ZONE_WETNESS: VariableSpec(
+        name=CanonicalVariable.ROOT_ZONE_WETNESS,
+        unit="fraction",
+        description="Root-zone soil wetness (0 = dry, 1 = saturated), MERRA-2 via POWER.",
+        source_aliases={"power": "GWETROOT"},
     ),
     CanonicalVariable.PRECIPITATION_PROBABILITY: VariableSpec(
         name=CanonicalVariable.PRECIPITATION_PROBABILITY,
