@@ -376,8 +376,11 @@ def rule_warnings(
     """
     sequence = repeated_crops(crops, horizon_months)
     warnings: list[str] = []
+    seen_pairs: set[frozenset[str]] = set()
     for first, second in pairwise(sequence):
-        if first.family == second.family:
+        pair = frozenset((first.id, second.id))
+        if first.family == second.family and pair not in seen_pairs:
+            seen_pairs.add(pair)
             warnings.append(
                 fill_template(
                     content.same_family_warning,

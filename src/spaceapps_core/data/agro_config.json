@@ -174,7 +174,7 @@
     "soil_baseline_score": 2,
     "soil_campaigns_before_penalty": 1,
     "soil_horizon_months": 24,
-    "decision_lead_days": 15,
+    "decision_lead_days": 0,
     "sandy_sand_percent": 70.0,
     "clayey_clay_percent": 35.0,
     "effective_rain_fraction_by_texture": {"sandy": 0.6, "loamy": 0.8, "clayey": 0.75},
