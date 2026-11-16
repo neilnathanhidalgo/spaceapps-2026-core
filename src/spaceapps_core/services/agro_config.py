@@ -303,6 +303,14 @@ class ContentConfig(_Block):
         ),
         description="Two crops of one family in a row; `{first}`, `{second}`, `{family}`.",
     )
+    water_low_warning: str = Field(
+        default="{crops} {needs} mucha agua y este año puede faltar. {reason}",
+        description=(
+            "With little water (the less favourable indicator is low), for options "
+            "with high-water crops; `{crops}`, `{needs}` and `{reason}` (the "
+            "indicator's own sentence) are filled in."
+        ),
+    )
     planting_month_warning: str = Field(
         default="{crop} se sembraría en {month}; en la zona se suele sembrar en {months}.",
         description="A crop planted outside its months; `{crop}`, `{month}`, `{months}`.",

@@ -85,17 +85,35 @@ def test_without_ten_reference_years_there_is_no_indicator() -> None:
     assert build_water_availability(short, date(2024, 11, 1)) is None
 
 
-def test_with_little_water_options_with_a_thirsty_crop_go_last() -> None:
+def test_little_water_only_reorders_the_water_priority() -> None:
     inputs = [
         RankingInput("rice-mix", 100, 0, 2, has_high_water_crop=True),
         RankingInput("dry-mix", 900, 0, 0),
     ]
 
-    assert rank_options(inputs, "most_soil_improvement") == ["rice-mix", "dry-mix"]
+    assert rank_options(inputs, "least_water") == ["rice-mix", "dry-mix"]
+    assert rank_options(inputs, "least_water", water_low=True) == ["dry-mix", "rice-mix"]
+    # Las demás prioridades mantienen su orden: la opción lleva un aviso.
     assert rank_options(inputs, "most_soil_improvement", water_low=True) == [
-        "dry-mix",
         "rice-mix",
+        "dry-mix",
     ]
+
+
+def test_climate_risk_looks_at_the_worst_year_then_broken_rules_then_soil() -> None:
+    def option(name: str, *, worst: int, rules: int = 0, soil: int = 0) -> RankingInput:
+        return RankingInput(
+            name, 500, 0, soil, worst_risk_month_count=worst, rule_warning_count=rules
+        )
+
+    inputs = [
+        option("risky", worst=4, soil=3),
+        option("out-of-season", worst=3, rules=2, soil=3),
+        option("calm", worst=3, rules=0, soil=1),
+    ]
+
+    assert rank_options(inputs, "least_climate_risk") == ["calm", "out-of-season", "risky"]
+    assert rank_options(inputs, "least_water") == ["risky", "out-of-season", "calm"]
 
 
 def test_wetness_phrase_names_the_side_most_years_are_on() -> None:

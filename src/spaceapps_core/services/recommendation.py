@@ -158,6 +158,8 @@ class RankingInput:
     risk_month_count: int
     soil_impact_score: int
     has_high_water_crop: bool = False
+    worst_risk_month_count: int = 0
+    rule_warning_count: int = 0
 
 
 def average_monthly_weather(series: Iterable[TimeSeries], years: Sequence[int]) -> ScenarioClimate:
@@ -449,25 +451,59 @@ def rank_options(
 ) -> list[str]:
     """Option ids from best to worst for a priority. Ties keep the input order.
 
-    With little water available (`water_low`), options that include a
-    high-water crop go after the others, whatever the priority.
+    - Cuidar el agua: less irrigation; with little water available
+      (`water_low`), options with a high-water crop go last.
+    - Recuperar la tierra: more soil improvement, then fewer risk months.
+    - Menos riesgo de clima: compared in the worst year (most risk months
+      in any scenario), then in the scenario being viewed, then the
+      agronomic rules the sequence breaks (planting out of season or the
+      same family in a row are risks too), then soil improvement.
+
+    Little water does not reorder the other two priorities: their options
+    carry a warning instead (see `water_low_warning`).
     """
     keys = {
-        "least_water": lambda option: (option.irrigation_m3,),
+        "least_water": lambda option: (
+            water_low and option.has_high_water_crop,
+            option.irrigation_m3,
+        ),
         "most_soil_improvement": lambda option: (
             -option.soil_impact_score,
             option.risk_month_count,
         ),
-        "least_climate_risk": lambda option: (option.risk_month_count, option.irrigation_m3),
+        "least_climate_risk": lambda option: (
+            option.worst_risk_month_count,
+            option.risk_month_count,
+            option.rule_warning_count,
+            -option.soil_impact_score,
+            option.irrigation_m3,
+        ),
     }
-    key = keys[criterion]
-    return [
-        option.option_id
-        for option in sorted(
-            inputs,
-            key=lambda option: ((water_low and option.has_high_water_crop), *key(option)),
+    return [option.option_id for option in sorted(inputs, key=keys[criterion])]
+
+
+def water_low_warning(
+    crops: Sequence[CropConfig],
+    config: AgroConfig,
+    water: WaterAvailability | None,
+    irrigation: IrrigationWater | None,
+) -> str | None:
+    """Warning for a sequence with high-water crops when water is low."""
+    reasons = [item.finding for item in (irrigation, water) if item and item.level == "low"]
+    thirsty = list(
+        dict.fromkeys(
+            crop.name for crop in crops if crop_water_need(crop, config.thresholds) == "high"
         )
-    ]
+    )
+    if not reasons or not thirsty:
+        return None
+    names = thirsty[0] if len(thirsty) == 1 else f"{', '.join(thirsty[:-1])} y {thirsty[-1]}"
+    return fill_template(
+        config.content.water_low_warning,
+        crops=names,
+        needs="pide" if len(thirsty) == 1 else "piden",
+        reason=reasons[0],
+    )
 
 
 def factsheet_of(crops: Sequence[CropConfig]) -> OptionFactsheet:
@@ -560,6 +596,7 @@ def build_recommendation(
         rotations.append((CUSTOM_ROTATION_ID, custom_crops))
 
     options: list[RotationOptionOut] = []
+    rule_counts: dict[str, int] = {}
     for rotation_id, crops in rotations:
         windows = crop_windows(request.planting_date, crops)
         impact, impact_score = soil_impact_of(crops)
@@ -569,7 +606,11 @@ def build_recommendation(
         warnings = rule_warnings(
             request.planting_date, crops, thresholds.soil_horizon_months, config.content
         )
-        by_scenario = with_rule_risk(results(windows), warnings)
+        rule_counts[rotation_id] = len(warnings)
+        water_warning = water_low_warning(crops, config, water, irrigation)
+        by_scenario = with_rule_risk(
+            results(windows), [*warnings, *([water_warning] if water_warning else [])]
+        )
         options.append(
             RotationOptionOut(
                 id=rotation_id,
@@ -583,7 +624,7 @@ def build_recommendation(
                 calendar=_calendar(request.planting_date, windows, crops, thresholds),
                 long_term_plan=plan,
                 scenarios=by_scenario,
-                warnings=warnings,
+                warnings=[*warnings, *([water_warning] if water_warning else [])],
             )
         )
 
@@ -595,6 +636,8 @@ def build_recommendation(
     baseline_warnings = rule_warnings(
         request.planting_date, [last_crop], thresholds.soil_horizon_months, config.content
     )
+    if baseline_water := water_low_warning([last_crop], config, water, irrigation):
+        baseline_warnings.append(baseline_water)
     current_practice = CurrentPracticeOut(
         crop_ids=[crop.id for crop in baseline_crops],
         consecutive_campaigns=request.consecutive_campaigns,
@@ -621,7 +664,7 @@ def build_recommendation(
         ranking={
             catalog_priority.id: {
                 scenario: rank_options(
-                    _ranking_inputs(options, scenario, config),
+                    _ranking_inputs(options, scenario, config, rule_counts),
                     catalog_priority.criterion,
                     water_low=least_water_level(water, irrigation) == "low",
                 )
@@ -902,6 +945,7 @@ def _ranking_inputs(
     options: Sequence[RotationOptionOut],
     scenario: ScenarioId,
     config: AgroConfig,
+    rule_counts: dict[str, int],
 ) -> list[RankingInput]:
     return [
         RankingInput(
@@ -913,6 +957,10 @@ def _ranking_inputs(
                 crop_water_need(config.crop(crop_id), config.thresholds) == "high"
                 for crop_id in option.crop_ids
             ),
+            worst_risk_month_count=max(
+                result.risk_month_count for result in option.scenarios.values()
+            ),
+            rule_warning_count=rule_counts.get(option.id, 0),
         )
         for option in options
     ]

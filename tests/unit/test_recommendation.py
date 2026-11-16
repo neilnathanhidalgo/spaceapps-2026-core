@@ -398,8 +398,9 @@ def test_build_recommendation_ranks_every_priority_of_the_catalog() -> None:
     assert response.ranking["save-water"]["normal"] == sorted(waters, key=lambda id_: waters[id_])
     # r2 is the only rotation whose crops add up to 3 points of soil impact.
     assert response.ranking["restore-soil"]["normal"][0] == "r2"
-    # Every option hits the same two risk months, so water breaks the tie.
-    assert response.ranking["lower-climate-risk"]["heavy_rains"] == ["r3", "r1", "r2"]
+    # Every option hits the same two risk months and breaks no rule, so the
+    # soil breaks the tie (r2 improves it most), then water.
+    assert response.ranking["lower-climate-risk"]["heavy_rains"] == ["r2", "r3", "r1"]
 
 
 def test_build_recommendation_marks_restrictions_without_dropping_options() -> None:
@@ -939,3 +940,28 @@ def test_one_campaign_is_said_in_singular() -> None:
     assert build_recommendation(three, config, CLIMATES).soil_health.findings[0] == (
         "Lleva 3 campañas seguidas de rice."
     )
+
+
+def test_with_little_water_thirsty_options_warn_and_are_never_low_risk() -> None:
+    from spaceapps_core.schemas.recommendation import IrrigationWater
+
+    config = parse_agro_config(_config_dict())
+    dry_basin = IrrigationWater.model_construct(
+        level="low", finding="En los cerros donde nace tu río llovió 39 % menos de lo normal."
+    )
+    request = RecommendationRequest(**PILOT, planting_date=date(2026, 12, 1))
+
+    response = build_recommendation(request, config, CLIMATES, irrigation=dry_basin)
+    by_id = {option.id: option for option in response.options}
+
+    # r1 (maíz y frejol) no lleva cultivos de mucha agua; arroz sí.
+    assert not any("mucha agua" in warning for warning in by_id["r1"].warnings)
+    rice_warnings = [w for w in response.current_practice.warnings if "mucha agua" in w]
+    assert rice_warnings == [
+        "Rice pide mucha agua y este año puede faltar. "
+        "En los cerros donde nace tu río llovió 39 % menos de lo normal."
+    ]
+    assert {r.climate_risk for r in response.current_practice.scenarios.values()} <= {
+        "medium",
+        "high",
+    }
