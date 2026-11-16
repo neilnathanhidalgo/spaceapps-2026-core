@@ -17,4 +17,3 @@ build/
 *.egg-info/
 .ipynb_checkpoints/
 .github/
-README.md
